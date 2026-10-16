@@ -43,6 +43,20 @@ bool loadFile(const std::string &path, NesRom &out, std::string &error) {
     const std::size_t chrSize = static_cast<std::size_t>(out.chrBanks8) * 8192;
     // Trainer (512 bytes) sits between header and PRG when header[6] bit 2 is set.
     const std::size_t trainerSize = (header[6] & 0x04u) != 0 ? 512u : 0u;
+    // iNES honesty: without bank switching only 16/32KB PRG are addressable,
+    // so refuse oversized images instead of silently truncating them later
+    // in mapInto. Mapper 1 (SxROM, rejected in mapInto) and mappers 2/3 get
+    // the explicit bank-switching message; chrBanks8 == 0 (CHR-RAM) is legal
+    // and loads fine - nothing maps CHR today (no PPU), so no CHR error or
+    // bogus mapping can happen.
+    if (prgSize > 32768) {
+        if (out.mapperId == 2 || out.mapperId == 3)
+            error = "mapper " + std::to_string(out.mapperId) +
+                    ": bank switching not supported (PRG > 32KB)";
+        else
+            error = "PRG larger than 32KB not supported";
+        return false;
+    }
     in.seekg(0, std::ios::end);
     const std::streamoff total = in.tellg();
     if (total < static_cast<std::streamoff>(16 + trainerSize + prgSize + chrSize)) {
@@ -64,6 +78,12 @@ bool loadFile(const std::string &path, NesRom &out, std::string &error) {
 bool mapInto(Emulator &emu, const NesRom &rom, std::string &error) {
     if (rom.mapperId == 1 || rom.mapperId > 3) {
         error = "unsupported mapper " + std::to_string(rom.mapperId) + " (NROM/UNROM/CNROM only)";
+        return false;
+    }
+    // Belt and braces for NesRom values not produced by loadFile(): the
+    // flat copy below must never truncate silently (see loadFile's check).
+    if (rom.prg.size() > 32768) {
+        error = "PRG larger than 32KB not supported (bank switching not supported)";
         return false;
     }
     Memory &mem = emu.memory();

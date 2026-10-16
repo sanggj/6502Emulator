@@ -9,11 +9,23 @@ Emulator::Emulator() : memory_{}, cpu_(memory_), apu_(new Apu()) {
     cpu_.reset();
     Memory &mem = memory_;
     mem.setIoWriteHook([&mem, this](uint16_t address, uint8_t value) {
-        if (address <= 0x4017) apu_->writeRegister(address, value);
+        if (address <= 0x4017) {
+            apu_->writeRegister(address, value);
+            // $4017 bit 6/7 write acks the frame IRQ mid-instruction; re-sync
+            // now so the CPU's in-step boundary poll (pollIrqAtBoundary) sees
+            // the released line instead of a stale-high one.
+            syncIrqLine();
+        }
         (void)mem;
     });
     mem.setIoReadHook([this](uint16_t address) -> uint8_t {
-        if (address == 0x4015) return apu_->readStatus(address);
+        if (address == 0x4015) {
+            const uint8_t status = apu_->readStatus(address);
+            // Reading $4015 clears the frame flag mid-instruction; same
+            // reason as the write hook above.
+            syncIrqLine();
+            return status;
+        }
         return 0;
     });
 }
@@ -30,6 +42,19 @@ Apu &Emulator::apu() noexcept {
 
 void Emulator::tickApu(int cpuCycles) noexcept {
     if (cpuCycles > 0) apu_->tick(static_cast<uint64_t>(cpuCycles));
+    syncIrqLine();
+}
+
+// The CPU IRQ line is shared between the external `irq` command and the APU
+// frame IRQ: assert while either source asserts, release only when neither
+// does. Called after every APU tick (frame IRQ) and on external requests.
+void Emulator::syncIrqLine() noexcept {
+    cpu_.setIrqLine(externalIrq_ || apu_->frameIrqAsserted());
+}
+
+void Emulator::requestIrq(bool asserted) noexcept {
+    externalIrq_ = asserted;
+    syncIrqLine();
 }
 
 bool Emulator::assembleAndBurn(const std::string &source, std::string &message) {
@@ -62,14 +87,17 @@ bool Emulator::assembleAndBurn(const std::string &source, std::string &message) 
 void Emulator::reset() {
     pause();
     cpu_.clearHalt();
-    cpu_.reset();
+    cpu_.reset(); // CPU reset releases the IRQ line (historic behavior)
+    externalIrq_ = false;
     apu_->reset();
+    syncIrqLine(); // APU frame IRQ cleared by apu reset; keep line truthful
 }
 
 int Emulator::step() {
     if (cpu_.halted()) return 0;
     const int cycles = cpu_.step();
     if (cycles > 0) apu_->tick(static_cast<uint64_t>(cycles));
+    syncIrqLine();
     if (cycles == 0) running_ = false;
     return cycles;
 }

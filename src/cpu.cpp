@@ -159,6 +159,12 @@ void CPU::writeByte(uint16_t addr, uint8_t val) {
 }
 
 void CPU::writeRmwByte(uint16_t addr, uint8_t newVal) {
+    if (coreVariant_ == Core::WDC65C02) {
+        // WDC 65C02: RMW instructions issue a single write cycle (NMOS
+        // writes the old value first, then the new one).
+        writeByte(addr, newVal);
+        return;
+    }
     mem.writeRmw(addr, rmwOld_, newVal);
 }
 
@@ -222,6 +228,9 @@ void CPU::reset() {
     waiIrqBypass_ = false;
     for (auto &d : decodeCache_) d.valid = false;
     P |= FLAG_U;
+    // Reset sequence costs 7 cycles on the real bus (RMI/RES fetch).
+    lastCycles = 7;
+    totalCycles = 7;
 }
 
 void CPU::serviceInterrupt(bool fromNmi) {
@@ -287,6 +296,7 @@ uint16_t CPU::pc16() {
 }
 
 int CPU::step() {
+    if (haltedFlag) return 0; // halted CPU executes nothing; step()==0 stays the caller stop signal
     // 65C02 WAI: idle at 2 cycles per poll until a line wakes the core.
     // An IRQ that wakes WAI is serviced even with I=1 (WDC documentation).
     if (waitingForInterrupt_) {
@@ -304,18 +314,21 @@ int CPU::step() {
     // instruction; suppressPollOnce_ models that delay.
     const bool pollDiscarded = suppressPollOnce_ && coreVariant_ == Core::NMOS6502;
     suppressPollOnce_ = false;
-    if (!pollDiscarded) {
-        if (nmiPending_) {
-            ++instructionCount;
-            serviceInterrupt(true);
-            return 7;
-        }
-        if (irqLine_ && (P & FLAG_I) == 0) {
-            ++instructionCount;
-            serviceInterrupt(false);
-            return 7;
-        }
+    if (!pollDiscarded && nmiPending_) {
+        ++instructionCount;
+        serviceInterrupt(true);
+        return 7;
     }
+    // 65C02 polls IRQ here with the current I (WDC: an I change from CLI
+    // takes effect immediately).  NMOS polls after the instruction instead,
+    // so CLI/SEI/PLP I changes are hidden from the poller for one
+    // instruction (NMOS deferred-interrupt quirk) - see pollIrqAtBoundary.
+    if (coreVariant_ != Core::NMOS6502 && !pollDiscarded && irqLine_ && (P & FLAG_I) == 0) {
+        ++instructionCount;
+        serviceInterrupt(false);
+        return 7;
+    }
+    const bool iAtStart = (P & FLAG_I) != 0; // snapshot for the end-of-instruction IRQ poll
 
     mem.beginWriteTrace();
     decimalC02Penalty_ = false;
@@ -852,7 +865,9 @@ int CPU::step() {
         cyclesUsed += 6;
         break;
     case 0xDE:
-        addr = pc16() + X;
+        base = pc16();
+        addr = static_cast<uint16_t>(base + X);
+        readByte(static_cast<uint16_t>((base & 0xFF00u) | (addr & 0xFFu))); // dummy unfixed-address cycle
         rmwOld_ = readByte(addr);
         val = static_cast<uint8_t>(rmwOld_ - 1);
         writeRmwByte(addr, val);
@@ -967,7 +982,9 @@ int CPU::step() {
         cyclesUsed += 6;
         break;
     case 0xFE:
-        addr = pc16() + X;
+        base = pc16();
+        addr = static_cast<uint16_t>(base + X);
+        readByte(static_cast<uint16_t>((base & 0xFF00u) | (addr & 0xFFu))); // dummy unfixed-address cycle
         rmwOld_ = readByte(addr);
         val = static_cast<uint8_t>(rmwOld_ + 1);
         writeRmwByte(addr, val);
@@ -1625,9 +1642,13 @@ int CPU::step() {
     default: {
         const IllegalInfo &il = kIllegal[opcode];
         if (il.kind == 0xFF || il.kind == ILL_JAM) {
+            // JAM/unknown: PC has already advanced past the opcode (JAM is a
+            // 1-byte, no-operand form per kIllegal/assembler). Charge the
+            // fetch cycles and fall through to the common tail so stepping
+            // reports progress instead of a 0-cycle stall.
             haltedFlag = true;
-            lastCycles = 0;
-            return 0;
+            cyclesUsed = il.base ? static_cast<int>(il.base) : 2;
+            break;
         }
         bool page = false;
         switch (il.mode) {
@@ -1810,9 +1831,33 @@ int CPU::step() {
         decimalC02Penalty_ = false;
     }
     P |= FLAG_U;
-    lastCycles = cyclesUsed;
     totalCycles += static_cast<uint64_t>(cyclesUsed);
+    cyclesUsed += pollIrqAtBoundary(opcode, iAtStart); // may append the 7-cycle IRQ sequence
+    lastCycles = cyclesUsed;
     return cyclesUsed;
+}
+
+// NMOS IRQ poll for the boundary after an instruction.  The I flag written
+// by CLI/SEI/PLP/RTI is invisible to the interrupt poller for one
+// instruction on NMOS silicon, so those four opcodes poll with the I value
+// snapshotted at instruction start (RTI pulls P off the stack, same
+// one-instruction delay class as PLP); every other opcode polls the current
+// I (identical to the old poll-at-next-step behaviour).  65C02 keeps the
+// pre-instruction poll in step() (WDC: RTI I takes effect immediately), so
+// this runs on NMOS only.  NMI is polled at the start of step() and is
+// never deferred.
+int CPU::pollIrqAtBoundary(uint8_t opcode, bool iAtStart) noexcept {
+    if (coreVariant_ != Core::NMOS6502) return 0;
+    if (haltedFlag) return 0;
+    if (suppressPollOnce_) return 0; // taken branch: discard this poll too (flag stays for the NMI poll)
+    if (!irqLine_) return 0;
+    bool pollI = (P & FLAG_I) != 0;
+    if (opcode == 0x58 || opcode == 0x78 || opcode == 0x28 || opcode == 0x40) // CLI / SEI / PLP / RTI
+        pollI = iAtStart;
+    if (pollI) return 0;
+    ++instructionCount;
+    serviceInterrupt(false);
+    return 7;
 }
 
 // ---- WDC 65C02 extension set (enabled via setCore / INI cpuCore) ----
@@ -2027,12 +2072,16 @@ uint8_t CPU::adc(uint8_t a, uint8_t b) {
     const uint8_t binaryResult = static_cast<uint8_t>(binary & 0xFFu);
     setFlag(FLAG_V, ((~(a ^ b) & (a ^ binaryResult) & 0x80u) != 0));
     if (decimalModeEnabled && getFlag(FLAG_D)) {
-        uint16_t bcd = static_cast<uint16_t>((a & 0x0Fu) + (b & 0x0Fu) + carryIn);
-        if (bcd > 9u) bcd += 6u;
-        bcd += static_cast<uint16_t>(a & 0xF0u) + static_cast<uint16_t>(b & 0xF0u);
-        if (bcd > 0x99u) bcd += 0x60u;
-        const uint8_t bcdResult = static_cast<uint8_t>(bcd & 0xFFu);
-        setFlag(FLAG_C, bcd > 0xFFu);
+        // BCD nibble correction from the spec: low digit +6 if >9, its carry
+        // feeds the high digit, high digit +6 if >9.  (A byte-level
+        // ">0x99" threshold agreed only for valid BCD; it diverged on 972
+        // invalid-digit inputs.)
+        int lo = static_cast<int>(a & 0x0Fu) + static_cast<int>(b & 0x0Fu) + carryIn;
+        if (lo > 9) lo += 6;
+        int hi = static_cast<int>(a >> 4) + static_cast<int>(b >> 4) + (lo >> 4);
+        if (hi > 9) hi += 6;
+        const uint8_t bcdResult = static_cast<uint8_t>(((hi & 0x0F) << 4) | (lo & 0x0F));
+        setFlag(FLAG_C, hi > 0x0F);
         if (coreVariant_ == Core::WDC65C02) {
             // 65C02: N/Z come from the BCD-adjusted result (NMOS: binary);
             // decimal mode costs one extra cycle on 65C02.
@@ -2105,6 +2154,52 @@ const char *CPU::opcodeName(uint8_t opcode) noexcept {
 bool CPU::isIllegal(uint8_t opcode) noexcept {
     const uint8_t kind = kIllegal[opcode].kind;
     return opcode != 0xEA && kind != 0xFF;
+}
+
+bool CPU::isIllegal(uint8_t opcode, Core core) noexcept {
+    if (!isIllegal(opcode)) return false;
+    if (core != Core::WDC65C02) return true;
+    // Opcodes the 65C02 redefines although the NMOS core treats them as
+    // illegal (WDC W65C02S set: BRA, INA/DEA, PHX/PLX/PHY/PLY, TSB/TRB,
+    // STZ, BIT #/zp,X/abs,X, JMP (abs,X), WAI/STP, 2-byte NOPs and the
+    // (zp)-indirect group).
+    switch (opcode) {
+    case 0x04:
+    case 0x0C: // TSB
+    case 0x12: // ORA (zp)
+    case 0x14:
+    case 0x1C: // TRB
+    case 0x1A:
+    case 0x3A: // INC A / DEC A
+    case 0x32: // AND (zp)
+    case 0x34:
+    case 0x3C: // BIT zp,X / abs,X
+    case 0x52: // EOR (zp)
+    case 0x5A: // PHY
+    case 0x64:
+    case 0x74: // STZ zp / zp,X
+    case 0x72: // ADC (zp)
+    case 0x7A: // PLY
+    case 0x7C: // JMP (abs,X)
+    case 0x80: // BRA
+    case 0x82:
+    case 0xC2:
+    case 0xE2: // 2-byte NOP
+    case 0x89: // BIT #imm
+    case 0x92: // STA (zp)
+    case 0x9C:
+    case 0x9E: // STZ abs / abs,X
+    case 0xB2: // LDA (zp)
+    case 0xCB: // WAI
+    case 0xD2: // CMP (zp)
+    case 0xDA: // PHX
+    case 0xDB: // STP
+    case 0xF2: // SBC (zp)
+    case 0xFA: // PLX
+        return false;
+    default:
+        return true;
+    }
 }
 
 uint8_t CPU::instructionLength(uint8_t opcode) noexcept {

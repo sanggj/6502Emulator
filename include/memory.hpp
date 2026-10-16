@@ -23,6 +23,11 @@ class Memory {
     void reset(uint8_t fill = 0x00);
     uint8_t read(uint16_t address) const noexcept;
     void write(uint16_t address, uint8_t value) noexcept;
+    // Raw poke: writes RAM directly, BYPASSING the I/O read/write hooks.
+    // Fine for restore paths (stepBack undo) and main-loop state pushes that
+    // intentionally skip device side effects - but a debugger/hex-view poke
+    // through here on an I/O address ($4000-$5FFF, e.g. $4015) silently
+    // misses the APU/PPU/devices. Use write() for pokes that must hit hooks.
     void writeRaw(uint16_t address, uint8_t value) noexcept {
         ram_[address] = value;
         ++epoch_;
@@ -62,9 +67,15 @@ class Memory {
     uint64_t epoch() const noexcept { return epoch_; }
     bool pageChangedSince(uint16_t address, std::size_t count, uint64_t sinceEpoch) const noexcept {
         if (count == 0) return false;
-        const uint16_t firstPage = static_cast<uint16_t>(address >> 6);
-        const uint16_t lastPage = static_cast<uint16_t>(((address & 0xFFFFu) + (count - 1)) >> 6);
-        for (uint16_t p = firstPage; p <= lastPage && p < 1024; ++p)
+        // Wider math: the old ((address & 0xFFFF) + count - 1) computed in
+        // 16/32-bit or wrapping size_t could put lastPage below firstPage
+        // (loop no-ops). Compute the span without any wrap and clamp to the
+        // last valid 64-byte page (1023).
+        const std::size_t firstPage = static_cast<std::size_t>(address) >> 6;
+        const std::size_t span = count - 1;
+        const std::size_t maxSpan = 0xFFFFu - static_cast<std::size_t>(address);
+        const std::size_t lastPage = span >= maxSpan ? 1023 : (static_cast<std::size_t>(address) + span) >> 6;
+        for (std::size_t p = firstPage; p <= lastPage; ++p)
             if (dirtyPage_[p] > sinceEpoch) return true;
         return false;
     }

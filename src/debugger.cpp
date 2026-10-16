@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cstdio>
 #include <cstring>
 #include <fstream>
 #include <iomanip>
@@ -205,6 +206,19 @@ bool Debugger::setBreakpointIgnore(uint16_t address, int count) {
 }
 
 bool Debugger::evaluateExpression(const std::string &expr, uint64_t &value, std::string &err) const {
+    return evaluateExpressionDepth(expr, value, err, 0);
+}
+
+bool Debugger::evaluateExpressionDepth(const std::string &expr, uint64_t &value, std::string &err,
+                                       int recDepth) const {
+    // Depth cap for the recursive paren descent: each nested '(' costs one
+    // stack frame, so unbounded nesting (e.g. 100k '(' in a condition) would
+    // overflow the stack. 128 comfortably covers real expressions (100 nested
+    // parens still evaluate) and keeps worst-case frames ~128 deep.
+    if (recDepth > 128) {
+        err = "expression nesting too deep";
+        return false;
+    }
     std::string e = expr;
     e.erase(std::remove_if(e.begin(), e.end(), [](unsigned char c) { return std::isspace(c) != 0; }),
             e.end());
@@ -218,10 +232,34 @@ bool Debugger::evaluateExpression(const std::string &expr, uint64_t &value, std:
     bool expectValue = true;
     while (i < e.size()) {
         if (expectValue) {
-            std::size_t start = i;
             if (e[i] == '(') {
-                ++i;
+                // Parenthesized sub-expression: evaluate it recursively and
+                // push the result as a single value so "(A+2)" and
+                // "(LOOP-1)" parse. Unbalanced parens are an error.
+                int depth = 0;
+                std::size_t j = i;
+                for (; j < e.size(); ++j) {
+                    if (e[j] == '(')
+                        ++depth;
+                    else if (e[j] == ')' && --depth == 0)
+                        break;
+                }
+                if (depth != 0 || j >= e.size()) {
+                    err = "unbalanced parentheses";
+                    return false;
+                }
+                uint64_t v = 0;
+                std::string subErr;
+                if (!evaluateExpressionDepth(e.substr(i + 1, j - i - 1), v, subErr, recDepth + 1)) {
+                    err = subErr;
+                    return false;
+                }
+                toks.push_back({v, 0});
+                i = j + 1;
+                expectValue = false;
+                continue;
             }
+            const std::size_t start = i;
             while (i < e.size() && (std::isxdigit(static_cast<unsigned char>(e[i])) || e[i] == '$' ||
                                     e[i] == '%' || std::isalpha(static_cast<unsigned char>(e[i]))))
                 ++i;
@@ -370,6 +408,17 @@ bool Debugger::exportCoverageCsv(const std::string &path, std::string &error) co
 
 bool Debugger::addWatchpoint(uint16_t start, uint16_t end, bool onRead, bool onWrite) {
     if (end < start) std::swap(start, end);
+    // The memory layer only traces WRITES; a read watchpoint would be
+    // accepted and then never fire. Report that honestly instead (see
+    // debugger.hpp addWatchpoint).
+    if (onRead) {
+        logErrorOnce("watchpoint rejected: read tracing unsupported (writes only)");
+        return false;
+    }
+    if (!onWrite) {
+        logErrorOnce("watchpoint rejected: neither read nor write trigger requested");
+        return false;
+    }
     if (watchpoints_.size() >= 64) return false;
     watchpoints_.push_back({start, end, true, onRead, onWrite});
     return true;
@@ -416,15 +465,25 @@ bool Debugger::beforeInstruction() {
             continue;
         }
         if (bp.logMode) {
-            if (logSink_)
-                logSink_("[LOG $" + [] { return std::string{}; }() + "] " +
+            if (logSink_) {
+                char addr[8];
+                std::snprintf(addr, sizeof(addr), "%04X", bp.address);
+                logSink_(std::string("[LOG $") + addr + "] " +
                          (bp.logMessage.empty() ? bp.condition : bp.logMessage));
+            }
             continue;
         }
         if (!bp.condition.empty()) {
             uint64_t v = 0;
             std::string err;
-            if (!evaluateExpression(bp.condition, v, err) || v == 0) continue;
+            if (!evaluateExpression(bp.condition, v, err)) {
+                char addr[8];
+                std::snprintf(addr, sizeof(addr), "%04X", bp.address);
+                logErrorOnce(std::string("breakpoint $") + addr + " condition '" + bp.condition +
+                             "': " + err);
+                continue;
+            }
+            if (v == 0) continue;
         }
         stop = true;
     }
@@ -693,7 +752,10 @@ bool Debugger::evaluateCondition(const std::string &expression) const {
             return true;
         }
         uint16_t parsed = 0;
-        if (!Assembler::parseValue(token, parsed)) return false;
+        if (!Assembler::parseValue(token, parsed, emulator_.program().symbols)) {
+            logErrorOnce("condition '" + expression + "': unknown operand '" + token + "'");
+            return false;
+        }
         out = parsed;
         return true;
     };
@@ -710,7 +772,19 @@ bool Debugger::evaluateCondition(const std::string &expression) const {
         if (std::strcmp(op, ">") == 0) return a > b;
         return a < b;
     }
+    // No comparison operator at all: never matches - surface it instead of
+    // silently treating it as "condition false".
+    logErrorOnce("condition '" + expression + "': no comparison operator");
     return false;
+}
+
+void Debugger::logErrorOnce(const std::string &msg) const {
+    if (!logSink_) return;
+    for (const std::string &seen : recentErrors_)
+        if (seen == msg) return; // seen within the last kRecentErrors distinct messages
+    recentErrors_[recentErrorsNext_] = msg;
+    recentErrorsNext_ = (recentErrorsNext_ + 1) % kRecentErrors;
+    logSink_(msg);
 }
 
 std::string Debugger::statusText() const {

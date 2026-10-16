@@ -70,8 +70,9 @@ std::string parseStr(const std::map<std::string, std::string> &keys, const char 
 }
 
 // Rewrite the file, updating/adding keys inside [config] and keeping every
-// other line (comments, other sections) untouched.
-void writeKeys(const std::string &file, const std::map<std::string, std::string> &updates) {
+// other line (comments, other sections) untouched. Returns false when the
+// file cannot be opened or written (previously this failed silently).
+bool writeKeys(const std::string &file, const std::map<std::string, std::string> &updates) {
     std::vector<std::string> lines;
     {
         std::ifstream in(file, std::ios::binary);
@@ -130,8 +131,9 @@ void writeKeys(const std::string &file, const std::map<std::string, std::string>
     for (std::size_t i = 0; i < pending.size(); ++i) lines.insert(lines.begin() + insertAt + i, pending[i]);
 
     std::ofstream out(file, std::ios::binary | std::ios::trunc);
-    if (!out) return;
+    if (!out) return false;
     for (const auto &line : lines) out << line << "\r\n";
+    return static_cast<bool>(out);
 }
 
 } // namespace
@@ -216,7 +218,7 @@ void Settings::load() {
     if (s.fbSize > 512) s.fbSize = 512;
 }
 
-void Settings::save() {
+bool Settings::save() {
     AppSettings &s = get();
     auto setInt = [](std::map<std::string, std::string> &m, const char *key, int value) {
         m[key] = std::to_string(value);
@@ -262,7 +264,19 @@ void Settings::save() {
         updates[key] = i < static_cast<int>(s.recentFiles.size()) ? s.recentFiles[static_cast<std::size_t>(i)]
                                                                   : "";
     }
-    writeKeys(s.path(), updates);
+    if (!writeKeys(s.path(), updates)) {
+        // No shared GUI status path reaches here (15 call sites across GUI
+        // modules, most outside this file's ownership): surface the failure
+        // through the debugger output stream; callers may also check the
+        // returned bool.
+        const std::string msg = "6502_ide: Settings::save failed: " + s.path() + "\n";
+#ifdef _WIN32
+        OutputDebugStringA(msg.c_str());
+#endif
+        std::fputs(msg.c_str(), stderr);
+        return false;
+    }
+    return true;
 }
 
 void Settings::pushRecent(const std::string &filePath) {

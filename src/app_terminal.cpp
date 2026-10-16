@@ -204,7 +204,20 @@ void execTerminalCommand(std::string raw) {
             in >> addrText;
             uint16_t addr = 0;
             if (parseAddrArg(addrText, addr)) {
+                // One-shot breakpoint like run-to-cursor (main.cpp's
+                // lastStopWasBreakpoint gate never fires without an installed
+                // breakpoint); bp-vector mutation under emulatorMutex() like
+                // every other run/step path (remote.cpp iterates it locked).
+                std::lock_guard<std::mutex> guard(remote::emulatorMutex());
+                bool userBpThere = false;
+                for (const auto &bp : g_app.dbg.breakpoints())
+                    if (bp.address == addr) {
+                        userBpThere = true;
+                        break;
+                    }
                 g_app.runToAddress = addr;
+                g_app.runToBpOurs = !userBpThere;
+                if (!userBpThere) g_app.dbg.addBreakpoint(addr);
                 g_app.emu.start();
             } else
                 termError("bad address\r\n");

@@ -62,6 +62,8 @@ class Settings {
   public:
     static AppSettings &get();
     static void load();
-    static void save();
+    // Returns false when the INI could not be written; the failure is also
+    // reported via OutputDebugStringA/stderr (no shared GUI status path).
+    static bool save();
     static void pushRecent(const std::string &file);
 };
