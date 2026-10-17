@@ -154,6 +154,9 @@ class Debugger {
     double coveragePercent(uint16_t low, uint16_t high) const noexcept;
     bool exportCoverageCsv(const std::string &path, std::string &error) const;
 
+    // NOTE: write watchpoints only. The memory layer traces writes, not reads,
+    // so onRead=true is rejected (returns false + logs via the sink) instead of
+    // being silently accepted and never firing.
     bool addWatchpoint(uint16_t start, uint16_t end, bool onRead = false, bool onWrite = true);
     void clearWatchpoints();
     const std::vector<DebugWatchpoint> &watchpoints() const noexcept { return watchpoints_; }
@@ -215,5 +218,17 @@ class Debugger {
     std::array<bool, 65536> coverage_{};
     bool coverageEnabled_ = false;
     bool evaluateCondition(const std::string &expression) const;
+    // Recursive paren-descent worker for evaluateExpression(): depth-capped so
+    // a hostile condition with tens of thousands of '(' cannot blow the stack.
+    bool evaluateExpressionDepth(const std::string &expr, uint64_t &value, std::string &err,
+                                 int recDepth) const;
+    // Route a condition/parse error to logSink_, each distinct message once
+    // only (a hot breakpoint must not flood the log).  Dedupe covers the last
+    // kRecentErrors distinct messages so two alternating condition errors do
+    // not re-log on every hit; bounded memory, oldest evicted first.
+    void logErrorOnce(const std::string &msg) const;
     static std::string upper(std::string text);
+    static constexpr std::size_t kRecentErrors = 8;
+    mutable std::array<std::string, kRecentErrors> recentErrors_{};
+    mutable std::size_t recentErrorsNext_ = 0;
 };

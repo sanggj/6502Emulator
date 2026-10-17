@@ -183,10 +183,34 @@ struct RemoteServer::Impl {
     void run() {
 #ifdef _WIN32
         while (running_.load()) {
+            // select() with a timeout instead of a bare accept(): Windows does
+            // not reliably cancel a blocked accept() when closesocket() runs on
+            // another thread, so stop() must be noticed via running_ within
+            // ~200ms rather than by the socket being closed underneath us.
+            fd_set readfds;
+            FD_ZERO(&readfds);
+            FD_SET(listenSock, &readfds);
+            timeval tv{};
+            tv.tv_sec = 0;
+            tv.tv_usec = 200000; // 200ms
+            const int ready = select(0, &readfds, nullptr, nullptr, &tv);
+            if (ready < 0) {
+                // select() failed spontaneously: this worker exits, so clear
+                // the flag or running() would keep claiming a live server.
+                // Only the flag is cleared here - stop()/next start() still
+                // own closing listenSock (after the join) and WSACleanup,
+                // so no socket is closed on this path (no double-close).
+                running_.store(false);
+                break;
+            }
+            if (ready == 0) continue; // timeout: re-check running_
             sockaddr_in peer{};
             int peerLen = sizeof(peer);
             SOCKET client = accept(listenSock, reinterpret_cast<sockaddr *>(&peer), &peerLen);
-            if (client == INVALID_SOCKET) break;
+            if (client == INVALID_SOCKET) {
+                running_.store(false); // same: worker leaving the loop, flag must follow
+                break;
+            }
             serveClient(client);
         }
 #endif
@@ -216,15 +240,18 @@ bool RemoteServer::start(Emulator &emu, Debugger &dbg, int port, std::string &er
     impl_->listenSock = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
     if (impl_->listenSock == INVALID_SOCKET) {
         error = "socket() failed";
+        stop(); // release Impl + balance the WSAStartup above on failure too
         return false;
     }
     sockaddr_in addr{};
     addr.sin_family = AF_INET;
+    // Loopback only: the debug server must never be reachable off-box.
     addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
     addr.sin_port = htons(static_cast<u_short>(port));
     if (bind(impl_->listenSock, reinterpret_cast<sockaddr *>(&addr), sizeof(addr)) != 0 ||
         listen(impl_->listenSock, 1) != 0) {
         error = "bind/listen failed on port " + std::to_string(port);
+        stop(); // closes listenSock, joins nothing, WSACleanup, deletes Impl
         return false;
     }
     impl_->running_.store(true);
@@ -244,19 +271,25 @@ void RemoteServer::stop() {
     if (!impl_) return;
     impl_->running_.store(false);
 #ifdef _WIN32
-    // Wake a worker blocked in recv() before joining it.
+    // Wake a worker blocked in recv() before joining it. (recv needs no
+    // SO_RCVTIMEO: shutdown() here wakes it, and a receive timeout would only
+    // drop idle-but-alive clients.)
     const SOCKET client = impl_->clientSock.exchange(INVALID_SOCKET);
     if (client != INVALID_SOCKET) {
         shutdown(client, SD_BOTH);
         closesocket(client);
     }
+#endif
+    if (impl_->worker.joinable()) impl_->worker.join(); // worker polls running_ every 200ms (select)
+#ifdef _WIN32
+    // Close the listener only after the worker has left its select()/accept
+    // loop: stop() must never race the worker on listenSock, and must not
+    // depend on closesocket() cancelling a blocked accept() (Windows does not
+    // guarantee that).
     if (impl_->listenSock != INVALID_SOCKET) {
         closesocket(impl_->listenSock);
         impl_->listenSock = INVALID_SOCKET;
     }
-#endif
-    if (impl_->worker.joinable()) impl_->worker.join();
-#ifdef _WIN32
     WSACleanup();
 #endif
     delete impl_;

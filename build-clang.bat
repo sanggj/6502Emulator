@@ -8,6 +8,7 @@ clang++ -std=c++17 -O2 -Wall -Wextra -Werror -Iinclude %SRCS% build\app_rc.o -o 
 if errorlevel 1 exit /b 1
 echo Built build\6502_ide.exe
 
-clang++ -std=c++17 -O1 -Wall -Wextra -Iinclude src\assembler.cpp src\cpu.cpp src\memory.cpp src\hexfile.cpp src\savestate.cpp src\emulator.cpp src\apu.cpp src\capture.cpp src\ines.cpp src\selftest_roms.cpp src\debugger.cpp src\strings.cpp src\platform.cpp src\settings.cpp src\remote.cpp tests\test_asm.cpp tests\test_cpu.cpp tests\test_platform.cpp tests\test_core.cpp -o build\test_core.exe -mconsole -lgdi32 -luser32 -lwinmm -lws2_32 -lcomdlg32
+clang++ -std=c++17 -O1 -Wall -Wextra -Werror -Iinclude src\assembler.cpp src\cpu.cpp src\memory.cpp src\hexfile.cpp src\savestate.cpp src\emulator.cpp src\apu.cpp src\capture.cpp src\ines.cpp src\selftest_roms.cpp src\debugger.cpp src\strings.cpp src\platform.cpp src\settings.cpp src\remote.cpp tests\test_asm.cpp tests\test_cpu.cpp tests\test_platform.cpp tests\test_core.cpp -o build\test_core.exe -mconsole -lgdi32 -luser32 -lwinmm -lws2_32 -lcomdlg32
 if errorlevel 1 exit /b 1
 build\test_core.exe
+exit /b %ERRORLEVEL%

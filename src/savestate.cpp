@@ -16,7 +16,24 @@ namespace savestate {
 namespace {
 
 constexpr char kMagic[4] = {'S', 'T', '8', 1};
-constexpr uint32_t kVersion = 2;
+// Savestate format compatibility rules (dispatched on payload.version):
+//   v1: checksum + payload only, no trailer (empty trailer still loads).
+//   v2: payload + apuLen(u32) + apu blob + nmiLine irqLine nmiPending core
+//       lastOpcode (u8) + lastCycles(u32).
+//   v3: v2 layout + instructionCount(u64) + transientFlags(u8), where
+//       transientFlags bit layout: bit0 = waitingForInterrupt,
+//       bit1 = suppressPollOnce, bit2 = waiIrqBypass (applied through
+//       CPU::restoreTransientState), bit3 = external IRQ source (Emulator
+//       requestIrq / terminal `irq` command). Files written before bit1-3
+//       existed carry zeros there and load as "all clear"; the external
+//       source then falls back to the old irqLine && !frameIrq inference.
+// Versions 1, 2 and 3 all load (same kVersion = 3: the extended bits are a
+// compatible extension of the v3 flags byte, not a layout change); newer or
+// unknown versions are rejected. Every
+// failure path (bad magic, unsupported version, truncation, oversized or
+// corrupt trailer, checksum mismatch) returns false BEFORE any emulator
+// mutation - all parsing happens into locals first.
+constexpr uint32_t kVersion = 3;
 
 uint32_t fnv1a(const uint8_t *data, std::size_t size) {
     uint32_t hash = 0x811C9DC5u;
@@ -32,9 +49,18 @@ void put8(std::vector<uint8_t> &v, uint64_t x) { v.push_back(static_cast<uint8_t
 void put32(std::vector<uint8_t> &v, uint64_t x) {
     for (int i = 0; i < 4; ++i) v.push_back(static_cast<uint8_t>((x >> (i * 8)) & 0xFFu));
 }
+void put64(std::vector<uint8_t> &v, uint64_t x) {
+    for (int i = 0; i < 8; ++i) v.push_back(static_cast<uint8_t>((x >> (i * 8)) & 0xFFu));
+}
 uint32_t get32(const std::vector<uint8_t> &v, std::size_t pos) {
     uint32_t x = 0;
     for (int i = 0; i < 4; ++i) x |= static_cast<uint32_t>(v[pos + static_cast<std::size_t>(i)]) << (i * 8);
+    return x;
+}
+uint64_t get64(const std::vector<uint8_t> &v, std::size_t pos) {
+    uint64_t x = 0;
+    for (int i = 0; i < 8; ++i)
+        x |= static_cast<uint64_t>(v[pos + static_cast<std::size_t>(i)]) << (i * 8);
     return x;
 }
 
@@ -76,15 +102,13 @@ bool saveToFile(Emulator &emu, const std::string &path, std::string &error) {
     payload.frameCounter = emu.frameCounter();
     std::memcpy(payload.ram, mem.data(), Memory::SIZE);
 
-    // v2 trailer appended after the payload, explicit little-endian:
+    // v3 trailer appended after the payload, explicit little-endian:
     // apuLen(u32) apuBlob | nmiLine irqLine nmiPending core lastOpcode (u8)
-    // | lastCycles(u32).
-    // waitingForInterrupt_/suppressPollOnce_/instructionCount have no public
-    // setter (and suppressPollOnce_ no getter) in cpu.hpp, so they are skipped.
+    // | lastCycles(u32) | instructionCount(u64) | transientFlags(u8).
     std::vector<uint8_t> apuBlob;
     emu.apu().saveState(apuBlob);
     std::vector<uint8_t> extra;
-    extra.reserve(4 + apuBlob.size() + 9);
+    extra.reserve(4 + apuBlob.size() + 9 + 8 + 1);
     put32(extra, apuBlob.size());
     extra.insert(extra.end(), apuBlob.begin(), apuBlob.end());
     put8(extra, cpu.nmiLine());
@@ -93,6 +117,15 @@ bool saveToFile(Emulator &emu, const std::string &path, std::string &error) {
     put8(extra, static_cast<uint8_t>(cpu.core()));
     put8(extra, cpu.lastOpcode());
     put32(extra, static_cast<uint32_t>(cpu.getCycles()));
+    put64(extra, cpu.getInstructionCount());
+    // transientFlags: bit0 waitingForInterrupt, bit1 suppressPollOnce,
+    // bit2 waiIrqBypass (CPU getters), bit3 external IRQ source (Emulator).
+    const uint8_t transientFlags =
+        static_cast<uint8_t>((cpu.isWaitingForInterrupt() ? 0x01u : 0x00u) |
+                             (cpu.suppressPollOnceActive() ? 0x02u : 0x00u) |
+                             (cpu.waiIrqBypassActive() ? 0x04u : 0x00u) |
+                             (emu.externalIrqAsserted() ? 0x08u : 0x00u));
+    put8(extra, transientFlags);
 
     std::ofstream out(path, std::ios::binary);
     if (!out) {
@@ -144,7 +177,7 @@ bool loadFromFile(Emulator &emu, const std::string &path, std::string &error) {
         return false;
     }
     const bool v1 = payload.version == 1;
-    if (!v1 && payload.version != kVersion) {
+    if (payload.version < 1 || payload.version > kVersion) {
         error = "unsupported savestate version";
         return false;
     }
@@ -156,6 +189,17 @@ bool loadFromFile(Emulator &emu, const std::string &path, std::string &error) {
     const std::streamoff fileSize = in.tellg();
     if (fileSize < kBase) {
         error = "not a valid savestate";
+        return false;
+    }
+    // Bound the trailer BEFORE allocating: apuLen comes from the file, so
+    // never size anything from it. Fixed per-version generous cap (NOT a live
+    // APU probe): 64KB APU blob + 4 (apuLen) + 9 (v2 tail) + 9 (v3 tail).
+    // A legitimate trailer is ~4 + 100 + 18 bytes; anything past the cap is a
+    // hostile/corrupt file (would otherwise allocate fileSize - kBase), and
+    // the size equality check below still pins apuLen exactly.
+    constexpr std::streamoff kMaxExtra = 65536 + 4 + 9 + 9;
+    if (fileSize - kBase > kMaxExtra) {
+        error = "corrupt savestate: trailer exceeds size cap";
         return false;
     }
     in.seekg(kBase, std::ios::beg);
@@ -173,11 +217,16 @@ bool loadFromFile(Emulator &emu, const std::string &path, std::string &error) {
         error = "savestate checksum mismatch";
         return false;
     }
-    // v2 trailer: apuLen(u32) apuBlob | nmiLine irqLine nmiPending core
-    // lastOpcode (u8) | lastCycles(u32).  v1 files have no trailer; defaults
-    // below leave the live APU/interrupt-line state untouched.
+    // v2/v3 trailer: apuLen(u32) apuBlob | nmiLine irqLine nmiPending core
+    // lastOpcode (u8) | lastCycles(u32), v3 additionally:
+    // instructionCount(u64) | transientFlags(u8).  v1 files have no trailer;
+    // defaults below leave the live APU/interrupt-line state untouched.
+    // All trailer parsing happens into locals: a corrupt trailer returns
+    // false before the first emulator mutation.
     uint8_t nmiLine = 0, irqLine = 0, nmiPending = 0, core = 0xFF, lastOpcode = 0;
     uint32_t lastCycles = 0;
+    uint64_t savedInstrCount = 0;
+    uint8_t transientFlags = 0;
     bool haveTrailer = false;
     std::vector<uint8_t> apuBlob;
     if (!v1) {
@@ -186,17 +235,26 @@ bool loadFromFile(Emulator &emu, const std::string &path, std::string &error) {
             return false;
         }
         const uint32_t apuLen = get32(extra, 0);
-        if (extra.size() != 4u + static_cast<std::size_t>(apuLen) + 5u + 4u) {
+        // Size math stays in size_t (64-bit): evaluating 4u + apuLen + 9u in
+        // uint32 would wrap for apuLen near 0xFFFFFFFF and pass a bogus
+        // check; with size_t the equality against the real file size bounds
+        // apuLen long before any indexing below.
+        const std::size_t cpuOff = 4u + static_cast<std::size_t>(apuLen);
+        const std::size_t tail = 9u + (payload.version >= 3 ? 9u : 0u);
+        if (extra.size() != cpuOff + tail) {
             error = "corrupt savestate";
             return false;
         }
-        const std::size_t cpuOff = 4u + apuLen;
         nmiLine = extra[cpuOff];
         irqLine = extra[cpuOff + 1];
         nmiPending = extra[cpuOff + 2];
         core = extra[cpuOff + 3];
         lastOpcode = extra[cpuOff + 4];
         lastCycles = get32(extra, cpuOff + 5);
+        if (payload.version >= 3) {
+            savedInstrCount = get64(extra, cpuOff + 9);
+            transientFlags = extra[cpuOff + 17];
+        }
         apuBlob.assign(extra.begin() + 4, extra.begin() + static_cast<std::streamoff>(cpuOff));
         haveTrailer = true;
     }
@@ -213,11 +271,27 @@ bool loadFromFile(Emulator &emu, const std::string &path, std::string &error) {
                       payload.halted != 0);
     if (core <= static_cast<uint8_t>(CPU::Core::WDC65C02))
         cpu.setCore(static_cast<CPU::Core>(core));
+    // Instruction count + transient flags. v3 carries them in the trailer;
+    // v1/v2 stored no transient flags, so they are restored as their (usual)
+    // false defaults - waiting/suppress/waiIrqBypass are only transiently
+    // true (during WAI, or for one instruction after a taken branch).
+    if (haveTrailer && payload.version >= 3) {
+        cpu.restoreTransientState(savedInstrCount, (transientFlags & 0x01u) != 0,
+                                  (transientFlags & 0x02u) != 0, (transientFlags & 0x04u) != 0);
+    } else {
+        cpu.restoreTransientState(payload.instructionCount, false, false, false);
+    }
     if (haveTrailer) {
-        cpu.setIrqLine(irqLine != 0);
+        // Order matters: the APU blob restores the frame-IRQ flag first, then
+        // the external source is re-applied via requestIrq (which ORs both).
+        // bit3 is authoritative for extended saves; older v1/v2/v3 files have
+        // it clear and keep the historical irqLine && !frameIrq inference.
+        emu.apu().loadState(apuBlob);
+        const bool external = (transientFlags & 0x08u) != 0 ||
+                              (irqLine != 0 && !emu.apu().frameIrqAsserted());
+        emu.requestIrq(external);
         // Atomic restore: driving setNmiLine() would latch a phantom edge.
         cpu.restoreNmiState(nmiLine != 0, nmiPending != 0);
-        emu.apu().loadState(apuBlob);
     }
     emu.memory().markAllDirty();
     std::memcpy(emu.memory().data(), payload.ram, Memory::SIZE);

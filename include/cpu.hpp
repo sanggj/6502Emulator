@@ -37,6 +37,15 @@ class CPU {
         nmiLine_ = asserted;
         nmiPending_ = pending;
     }
+    // Savestate restore: transient execution state not covered by
+    // restoreTiming()/restoreNmiState() (v2 trailer fields).
+    void restoreTransientState(uint64_t instrCount, bool waiting, bool suppressPoll,
+                               bool waiIrqBypass) noexcept {
+        instructionCount = instrCount;
+        waitingForInterrupt_ = waiting;
+        suppressPollOnce_ = suppressPoll;
+        waiIrqBypass_ = waiIrqBypass;
+    }
     int step(); // returns cycles used
 
     // Registers
@@ -55,6 +64,8 @@ class CPU {
     uint8_t lastOpcode() const noexcept { return lastOpcodeValue; }
     bool halted() const noexcept { return haltedFlag; }
     bool isWaitingForInterrupt() const noexcept { return waitingForInterrupt_; }
+    bool suppressPollOnceActive() const noexcept { return suppressPollOnce_; }
+    bool waiIrqBypassActive() const noexcept { return waiIrqBypass_; }
     void setDecimalModeEnabled(bool enabled) noexcept { decimalModeEnabled = enabled; }
     bool decimalModeIsEnabled() const noexcept { return decimalModeEnabled; }
     void setCore(Core core) noexcept;
@@ -79,7 +90,10 @@ class CPU {
     static const char *opcodeName(uint8_t opcode) noexcept;
     static uint8_t instructionLength(uint8_t opcode) noexcept;
     int instructionCycles(uint8_t opcode, uint16_t address) const noexcept;
+    // opcode-only form = NMOS table; the Core overload also knows the
+    // opcodes the 65C02 redefines (BRA/STZ/TSB/TRB/WAI/...).
     static bool isIllegal(uint8_t opcode) noexcept;
+    static bool isIllegal(uint8_t opcode, Core core) noexcept;
 
   private:
     Memory &mem;
@@ -147,6 +161,9 @@ class CPU {
 
     // Interrupt service shared by NMI/IRQ/BRK hijack paths.
     void serviceInterrupt(bool fromNmi);
+
+    // NMOS IRQ poll for the boundary after an instruction (see cpu.cpp).
+    int pollIrqAtBoundary(uint8_t opcode, bool iAtStart) noexcept;
 
     // 65C02 extension dispatch; returns cycles, or -1 when the opcode is not
     // a 65C02 extension and should fall through to the common decoder.

@@ -238,6 +238,12 @@ std::string stripComment(const std::string &raw) {
     char q = 0;
     for (std::size_t i = 0; i < raw.size(); ++i) {
         const char c = raw[i];
+        // Inside a quoted string the char after '\' is data, so an escaped quote
+        // ("a\"") must not close the string and reveal a later ';' as a comment.
+        if (quote && c == '\\' && i + 1 < raw.size()) {
+            ++i;
+            continue;
+        }
         if ((c == '"' || c == '\'')) {
             if (quote && c == q) {
                 quote = false;
@@ -407,6 +413,36 @@ struct Preprocessor {
     // range so error-attribution lookups never collide.
     int seqBase = 1000000;
     int seqExtra = 0;
+    // Constants visible at expansion time: options.predefinedSymbols plus ".equ"/
+    // ".define" values defined earlier in the flattened source (labels cannot be
+    // known here; pass 1 owns those). ".repeat" counts, ".break if" and macro
+    // parameter defaults evaluate against this table instead of an empty one.
+    std::map<std::string, uint16_t> constSyms;
+
+    // Preprocessor-side mirror of pass 1's conditional state (pass 1 owns the
+    // real one; see condStackPass1) so ".equ"/".define" inside a provably
+    // FALSE ".if" branch is not recorded below - a later ".repeat"/macro
+    // default must not see a symbol the conditional logic never defines.
+    // Conservative by design: conditions that cannot be evaluated here (label
+    // references are pass-1 data, and ".ifdef" of a not-yet-known name) are
+    // marked unknown and treated as ACTIVE, i.e. recorded exactly as before -
+    // this mirror only ever skips recording it can PROVE unreachable, so it
+    // can never hide a symbol a later ".repeat" legitimately needs.
+    struct CondPre {
+        bool parentActive;
+        bool known; // false: condition not evaluable during preprocessing
+        bool cond;
+        bool inElse;
+    };
+    std::vector<CondPre> condStack;
+    bool condActivePre() const {
+        for (const auto &f : condStack) {
+            const bool active =
+                f.parentActive && (!f.known || (f.inElse ? !f.cond : f.cond));
+            if (!active) return false;
+        }
+        return true;
+    }
 
     bool fail(const SourceLine &at, const std::string &msg) {
         errors->push_back({at.number, msg, operandColumnOf(at.text), at.fileName});
@@ -512,6 +548,85 @@ struct Preprocessor {
                 out.push_back(src);
                 ++i;
                 continue;
+            }
+            // Conditional bookkeeping FIRST: mirror pass 1's .if/.else/.endif
+            // state (see CondPre above) so the ".equ"/".define" recording below
+            // can be gated on it. The directive lines themselves still fall
+            // through and are emitted unchanged for pass 1.
+            const Assembler::ParsedLine pl = Assembler::parseLine(src.text);
+            const bool isIfPre = (pl.mnemonic == ".IF" || pl.mnemonic == ".IFDEF" ||
+                                  pl.mnemonic == ".IFNDEF");
+            const bool isElseLikePre = (pl.mnemonic == ".ELSE" || pl.mnemonic == ".ELIF");
+            const bool isEndifPre = (pl.mnemonic == ".ENDIF");
+            if (isIfPre || isElseLikePre || isEndifPre) {
+                if (isIfPre) {
+                    const bool parentActive = condActivePre();
+                    bool known = false;
+                    bool truth = true;
+                    if (pl.mnemonic == ".IF") {
+                        int32_t cv = 0;
+                        std::string cerr;
+                        if (evaluateConst(pl.operands, cv, cerr)) {
+                            known = true;
+                            truth = (cv != 0);
+                        } // else: unevaluable here (labels) -> unknown -> active
+                    } else {
+                        // .IFDEF/.IFNDEF: only a name already in the constant
+                        // table is decidable now; absence may still be a
+                        // pass-1 label, so that stays unknown -> active.
+                        std::istringstream in(pl.operands);
+                        std::string name;
+                        in >> name;
+                        if (!name.empty() && constSyms.count(normalizeSymbolName(name))) {
+                            known = true;
+                            truth = (pl.mnemonic == ".IFDEF");
+                        }
+                    }
+                    condStack.push_back({parentActive, known, truth, false});
+                } else if (isElseLikePre) {
+                    if (!condStack.empty()) {
+                        CondPre &f = condStack.back();
+                        if (pl.mnemonic == ".ELSE") {
+                            if (!f.inElse) f.inElse = true;
+                            // unknown frames stay active in both branches
+                        } else if (f.known && !f.inElse) {
+                            // .ELIF: mirror pass 1 (cond/inElse update) only
+                            // while the chain is still decidable here.
+                            int32_t cv = 0;
+                            std::string cerr;
+                            if (evaluateConst(pl.operands, cv, cerr)) {
+                                f.cond = f.cond ? false : (cv != 0);
+                                f.inElse = f.cond;
+                            } else {
+                                f.known = false; // degrade to unknown -> active
+                            }
+                        }
+                    }
+                } else if (!condStack.empty()) {
+                    condStack.pop_back();
+                }
+            }
+            // Record ".equ"/".define" constants in source order so a later ".repeat"
+            // count or macro default can use them. Failures are skipped silently:
+            // pass 1 re-evaluates with the full symbol table and reports real errors.
+            // Skipped while inside an inactive conditional branch: pass 1 would never
+            // define the symbol there, so recording it would let a later ".repeat"
+            // expand against a symbol that cannot exist (divergent expansion).
+            if ((pl.mnemonic == ".EQU" || pl.mnemonic == ".DEFINE") && condActivePre()) {
+                std::string nameKey = pl.label;
+                std::string valueExpr = pl.operands;
+                if (nameKey.empty()) {
+                    std::istringstream parts(pl.operands);
+                    std::string firstName;
+                    parts >> firstName;
+                    std::getline(parts, valueExpr);
+                    valueExpr = trim(valueExpr);
+                    nameKey = Assembler::normalizeSymbol(firstName);
+                }
+                int32_t cv = 0;
+                std::string cerr;
+                if (!nameKey.empty() && evaluateConst(valueExpr, cv, cerr))
+                    constSyms[nameKey] = static_cast<uint16_t>(cv & 0xFFFF);
             }
             std::string labelPrefix;
             std::string bodyText = strippedAll;
@@ -621,7 +736,6 @@ struct Preprocessor {
                 std::string countText;
                 std::getline(tokens, countText);
                 int32_t n = 0;
-                std::map<std::string, uint16_t> none;
                 std::string err;
                 if (!evaluateConst(countText, n, err)) return fail(src, ".repeat: " + err);
                 if (n < 0 || static_cast<uint32_t>(n) > 65536u)
@@ -703,8 +817,7 @@ struct Preprocessor {
     static std::string normalizeSymbolName(const std::string &s) { return Assembler::normalizeSymbol(s); }
 
     bool evaluateConst(const std::string &text, int32_t &value, std::string &error) {
-        std::map<std::string, uint16_t> none;
-        return AsmEvalImpl::evalExprInt(text, value, none, nullptr, "", error);
+        return AsmEvalImpl::evalExprInt(text, value, constSyms, nullptr, "", error);
     }
 };
 
@@ -794,6 +907,9 @@ class Parser {
             if (!expr(prec, rhs)) return false;
             switch (shift ? static_cast<char>(std::tolower(static_cast<unsigned char>(op)) == '<' ? 'l' : 'r')
                           : op) {
+            // All +,-,* and INT32_MIN edge cases go through uint32_t so wrapping is
+            // defined (no signed-overflow UB); values re-enter as int32_t bit patterns
+            // and the 16-bit range check at the eval boundary still reports errors.
             case '|':
                 value |= rhs;
                 break;
@@ -822,21 +938,29 @@ class Parser {
                 value = static_cast<int32_t>(static_cast<uint32_t>(value) >> (rhs & 31));
                 break;
             case '+':
-                value += rhs;
+                value = static_cast<int32_t>(static_cast<uint32_t>(value) + static_cast<uint32_t>(rhs));
                 break;
             case '-':
-                value -= rhs;
+                value = static_cast<int32_t>(static_cast<uint32_t>(value) - static_cast<uint32_t>(rhs));
                 break;
             case '*':
-                value *= rhs;
+                value = static_cast<int32_t>(static_cast<uint32_t>(value) * static_cast<uint32_t>(rhs));
                 break;
             case '/':
                 if (rhs == 0) return fail("division by zero");
-                value /= rhs;
+                // INT32_MIN / -1 would overflow: wrap to INT32_MIN (defined), the
+                // boundary check turns it into a line-numbered range error.
+                if (value == INT32_MIN && rhs == -1)
+                    value = INT32_MIN;
+                else
+                    value /= rhs;
                 break;
             case '%':
                 if (rhs == 0) return fail("modulo by zero");
-                value %= rhs;
+                if (value == INT32_MIN && rhs == -1)
+                    value = 0;
+                else
+                    value %= rhs;
                 break;
             default:
                 return fail("bad operator");
@@ -871,7 +995,7 @@ class Parser {
             {
                 int32_t v;
                 if (!unary(v)) return false;
-                value = -v;
+                value = static_cast<int32_t>(0u - static_cast<uint32_t>(v)); // wraps, no INT32_MIN UB
                 return true;
             }
         case '+':
@@ -906,7 +1030,7 @@ class Parser {
             {
                 int32_t v;
                 if (!unary(v)) return false;
-                value = (v >> 8) & 0xFF;
+                value = static_cast<int32_t>((static_cast<uint32_t>(v) >> 8) & 0xFFu);
                 return true;
             }
         default:
@@ -967,6 +1091,8 @@ class Parser {
                 if (digits > 8) return fail("hex constant out of range");
             }
             if (digits == 0) return fail("invalid hex constant");
+            // Values above INT32_MAX would flip sign on the int32 entry cast.
+            if (v > 0x7FFFFFFFu) return fail("hex constant out of range");
             value = static_cast<int32_t>(v);
             return true;
         }
@@ -981,6 +1107,7 @@ class Parser {
                 if (digits > 32) return fail("binary constant out of range");
             }
             if (digits == 0) return fail("invalid binary constant");
+            if (v > 0x7FFFFFFFu) return fail("binary constant out of range");
             value = static_cast<int32_t>(v);
             return true;
         }
@@ -1145,6 +1272,7 @@ class Parser {
                 if (digits > 8) return fail("hex constant out of range");
             }
             if (digits == 0) return fail("invalid hex constant");
+            if (v > 0x7FFFFFFFu) return fail("hex constant out of range");
             value = static_cast<int32_t>(v);
             return true;
         }
@@ -1158,7 +1286,9 @@ class Parser {
             if (!std::isdigit(static_cast<unsigned char>(d))) break;
             v = v * 10u + static_cast<uint64_t>(d - '0');
             ++pos_;
-            if (v > 0xFFFFFFFFull) return fail("decimal constant out of range");
+            // Literals must fit the signed 32-bit expression domain; values that only
+            // fit uint32 (e.g. 4294967295) would alias -1 after the int32 cast.
+            if (v > 0x7FFFFFFFull) return fail("decimal constant out of range");
         }
         value = static_cast<int32_t>(v);
         return true;
@@ -1380,6 +1510,10 @@ Assembler::ParsedLine Assembler::parseLine(const std::string &raw) {
         char q = 0;
         for (std::size_t ci = 0; ci < s.size(); ++ci) {
             const char c = s[ci];
+            if (inQuote && c == '\\' && ci + 1 < s.size()) {
+                ++ci; // escaped char stays inside the quote (never a label separator)
+                continue;
+            }
             if ((c == '"' || c == '\'') && (!inQuote || c == q)) {
                 inQuote = !inQuote;
                 q = inQuote ? c : 0;
@@ -1423,7 +1557,14 @@ std::vector<std::string> Assembler::splitOperands(const std::string &text) {
     int paren = 0;
     bool quote = false;
     char q = 0;
-    for (char c : text) {
+    for (std::size_t i = 0; i < text.size(); ++i) {
+        const char c = text[i];
+        if (quote && c == '\\' && i + 1 < text.size()) {
+            // Keep the escape pair verbatim: '"' inside a string is data, not a close quote.
+            current.push_back(c);
+            current.push_back(text[++i]);
+            continue;
+        }
         if ((c == '"' || c == '\'') && (!quote || c == q)) {
             quote = !quote;
             q = quote ? c : 0;
@@ -1611,9 +1752,14 @@ bool Assembler::encodeInstruction(const ParsedLine &line, AddrMode mode, uint16_
         if (!op.empty() && op.front() == '(' && op.back() == ')') op = trim(op.substr(1, op.size() - 2));
         const auto cx = op.rfind(',');
         if (cx != std::string::npos) op = trim(op.substr(0, cx));
-    } else if (mode == Assembler::AddrMode::IndexedIndirect || mode == Assembler::AddrMode::IndirectIndexed ||
-               mode == Assembler::AddrMode::AbsoluteX || mode == Assembler::AddrMode::AbsoluteY ||
-               mode == Assembler::AddrMode::ZeroPageX || mode == Assembler::AddrMode::ZeroPageY) {
+    } else if (mode == Assembler::AddrMode::IndexedIndirect) {
+        // "($42,X)": drop the '(' first, otherwise cutting at the comma leaves "($42".
+        if (!op.empty() && op.front() == '(') op = trim(op.substr(1));
+        const auto cx = op.rfind(',');
+        if (cx != std::string::npos) op = trim(op.substr(0, cx));
+    } else if (mode == Assembler::AddrMode::IndirectIndexed || mode == Assembler::AddrMode::AbsoluteX ||
+               mode == Assembler::AddrMode::AbsoluteY || mode == Assembler::AddrMode::ZeroPageX ||
+               mode == Assembler::AddrMode::ZeroPageY) {
         const auto comma = op.rfind(',');
         if (comma != std::string::npos) op = trim(op.substr(0, comma));
     }
@@ -1893,6 +2039,9 @@ bool assembleCore(const std::vector<SourceLine> &raw, std::vector<SourceLine> &p
     pre.errors = &errors;
     pre.budget = options.maxExpansionLines;
     pre.includePaths = options.includePaths;
+    for (const auto &kv : options.predefinedSymbols)
+        if (!kv.first.empty())
+            pre.constSyms[Assembler::normalizeSymbol(kv.first)] = static_cast<uint16_t>(kv.second);
     if (!pre.run(raw, options.basePath.empty() ? "." : options.basePath, options.maxIncludeDepth, proc))
         return false;
     if (std::getenv("ASM_DEBUG") != nullptr) {
@@ -2284,6 +2433,11 @@ bool assembleCore(const std::vector<SourceLine> &raw, std::vector<SourceLine> &p
     uint16_t entry = sawOrg ? firstOrg : 0x8000;
     const auto resetSym = symbols.find("RESET");
     if (resetSym != symbols.end()) entry = resetSym->second;
+    // Precedence (unchanged, see defect register item 5): .entry > START > RESET >
+    // first .org. START intentionally wins over RESET: every example defines only
+    // "start:" and writes the reset vector itself (".org $FFFC" / ".word start"),
+    // so nothing in-tree indicates RESET must take priority. Flipping this would
+    // change --run entry for user sources that define both labels.
     const auto startSym = symbols.find("START");
     if (startSym != symbols.end()) entry = startSym->second;
     if (hasEntryDirective) entry = entryDirective;

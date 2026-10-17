@@ -552,7 +552,9 @@ void Apu::saveState(std::vector<uint8_t> &out) const {
 void Apu::loadState(const std::vector<uint8_t> &in) {
     std::vector<uint8_t> expected;
     saveState(expected);
-    if (in.size() < expected.size()) return; // truncated/foreign blob: keep current state
+    // Exact-size match only: a truncated OR foreign/oversized blob means we
+    // do not understand the format - keep the live state untouched.
+    if (in.size() != expected.size()) return;
     std::size_t pos = 0;
     auto g8 = [&]() -> uint8_t { return in[pos++]; };
     auto g16 = [&]() -> uint16_t {
@@ -568,8 +570,11 @@ void Apu::loadState(const std::vector<uint8_t> &in) {
     for (int i = 0; i < 0x18; ++i) registers_[i] = g8();
     for (Square &ch : square_) {
         ch.enabled = g8() != 0;
-        ch.duty = g8();
-        ch.dutyStep = g8();
+        // Mask blob-supplied sequencer indices to their table extents
+        // (kDutyWave[4][8], triangle 32-step sequence): a hostile-but-valid-size
+        // blob would otherwise cause an OOB read in mix()/tickTriangle().
+        ch.duty = static_cast<uint8_t>(g8() & 0x03u);
+        ch.dutyStep = static_cast<uint8_t>(g8() & 0x07u);
         ch.period = g16();
         ch.timer = g16();
         ch.lengthCounter = g8();
@@ -588,7 +593,7 @@ void Apu::loadState(const std::vector<uint8_t> &in) {
     triangle_.enabled = g8() != 0;
     triangle_.period = g16();
     triangle_.timer = g16();
-    triangle_.step = g8();
+    triangle_.step = static_cast<uint8_t>(g8() & 0x1Fu); // 32-step sequence
     triangle_.lengthCounter = g8();
     triangle_.linearReload = g8() != 0;
     triangle_.linearCounter = g8();
@@ -606,7 +611,10 @@ void Apu::loadState(const std::vector<uint8_t> &in) {
     noise_.envelopeLoop = g8() != 0;
     noise_.constantVolume = g8() != 0;
     frameTimer_ = g64();
-    frameStep_ = g8();
+    // Frame sequencer table runs steps 0..3 (reset at >= 4 in
+    // tickFrameSequencer); clamp instead of trusting the blob byte.
+    const uint8_t savedFrameStep = g8();
+    frameStep_ = (savedFrameStep > 3) ? 3 : savedFrameStep;
     frameIrqInhibit_ = g8() != 0;
     frameIrqPending_ = g8() != 0;
     enabled_ = g8() != 0;
@@ -690,7 +698,11 @@ void Apu::writeRegister(uint16_t address, uint8_t value) {
         break;
     }
     case 0x17:
+        // Mode bit 7 is read back via fiveStepMode() from registers_[0x17]
+        // (stored above). Writing $4017 with bit 6 or 7 set acknowledges the
+        // frame IRQ (hardware behavior), then the sequencer restarts.
         frameIrqInhibit_ = (value & 0x40u) != 0;
+        if (value & 0xC0u) frameIrqPending_ = false;
         frameStep_ = 0;
         frameTimer_ = 0;
         break;
@@ -707,6 +719,10 @@ uint8_t Apu::readStatus(uint16_t address) {
     if (triangle_.lengthCounter > 0) status |= 0x04;
     if (noise_.lengthCounter > 0) status |= 0x08;
     if (frameIrqPending_) status |= 0x40;
+    // $4015 bit 5 ("frame interrupt mode") minimal: mirrors the flag while in
+    // 4-step mode only. Reading clears bit 6 (and bit 5 with it); a $4017
+    // write with bit 6/7 acknowledges both.
+    if (frameIrqPending_ && !fiveStepMode()) status |= 0x20;
     frameIrqPending_ = false;
     return status;
 }
@@ -795,6 +811,10 @@ void Apu::tickFrameSequencer(uint64_t cycles) {
             else if (triangle_.linearCounter > 0)
                 --triangle_.linearCounter;
             if (!triangle_.controlFlag) triangle_.linearReload = false;
+            // Frame IRQ: raised at the 4th quarter-frame step of the 4-step
+            // sequencer (~29828 CPU cycles). 5-step mode ($4017 bit 7) never
+            // raises it; $4017 bit 6 inhibits it.
+            if (!fiveStepMode() && !frameIrqInhibit_) frameIrqPending_ = true;
         }
     }
 }
@@ -815,15 +835,20 @@ int16_t Apu::mix() const {
 }
 
 void Apu::tick(uint64_t cpuCycles) {
-    if (!enabled_ && !recording_) return;
-
-    for (uint64_t i = 0; i < cpuCycles; ++i) {
-        tickSquare(square_[0], 0);
-        tickSquare(square_[1], 1);
-        tickTriangle();
-        tickNoise();
+    const bool audio = enabled_ || recording_;
+    if (audio) {
+        for (uint64_t i = 0; i < cpuCycles; ++i) {
+            tickSquare(square_[0], 0);
+            tickSquare(square_[1], 1);
+            tickTriangle();
+            tickNoise();
+        }
     }
+    // The frame sequencer must advance even with no audio backend (CI,
+    // remote desktop): frame IRQ and $4015 bit 6 report independently of
+    // audio. Only sample generation/mixing needs a backend or a recording.
     tickFrameSequencer(cpuCycles);
+    if (!audio) return;
 
     sampleAccumulator_ += cpuCycles;
     while (sampleAccumulator_ >= kCpuHz / kSampleRate) {
@@ -844,6 +869,12 @@ void Apu::tick(uint64_t cpuCycles) {
 
 bool Apu::startWavRecord(const std::string &path) {
     stopWavRecord();
+    // Probe-open so an unwritable path fails fast here (recording_ stays
+    // false) instead of being silently dropped by stopWavRecord().
+    {
+        std::ofstream probe(path, std::ios::binary);
+        if (!probe) return false;
+    }
     recorded_.clear();
     recording_ = true;
     recordPath_ = path;

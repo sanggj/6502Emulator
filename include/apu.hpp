@@ -34,7 +34,16 @@ class Apu {
     std::size_t recordedSamples() const noexcept { return recorded_.size(); }
     void setRecordGain(float gain) noexcept { recordGain_ = gain; }
 
-    uint8_t registerValue(int index) const noexcept { return registers_[index & 0x1F]; }
+    // registers_ has 0x18 bytes ($4000-$4017); out-of-range/negative indices
+    // collapse to 0 (the old `index & 0x17` mask wrongly aliased 8..15 to 0..7).
+    uint8_t registerValue(int index) const noexcept {
+        return registers_[index >= 0 && index < 0x18 ? index : 0];
+    }
+
+    // Frame IRQ line level: pending AND not inhibited (4-step mode only ever
+    // sets the flag). Cleared by reading $4015 or by writing $4017 bit 6/7.
+    // Consumers (Emulator) must OR this with other IRQ sources.
+    bool frameIrqAsserted() const noexcept { return frameIrqPending_ && !frameIrqInhibit_; }
 
     // Savestate serialisation: explicit little-endian blob of register,
     // channel and frame-sequencer state (audio buffers/backend excluded).
@@ -95,6 +104,9 @@ class Apu {
     void clockEnvelope(Square &ch);
     void clockEnvelopeNoise();
     int16_t mix() const;
+    // $4017 bit 7: 5-step mode. Derived from the serialized register file so
+    // the savestate blob layout stays unchanged for old files.
+    bool fiveStepMode() const noexcept { return (registers_[0x17] & 0x80u) != 0; }
 
     uint8_t registers_[0x18]{};
     Square square_[2];

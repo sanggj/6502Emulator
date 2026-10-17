@@ -13,11 +13,11 @@ Support for docking/undocking panels (like Visual Studio).
 
 Save and restore window layouts.
 
-Multi‑monitor awareness.
+Multi-monitor awareness.
 
-Full‑screen mode (F11).
+Full-screen mode (F11).
 
-High DPI scaling (per‑monitor DPI).
+High DPI scaling (per-monitor DPI).
 
 Customizable theme (light/dark/other).
 
@@ -33,15 +33,15 @@ Animated transitions for panel resizing.
 
 Minimize to tray.
 
-Always‑on‑top mode.
+Always-on-top mode.
 
 Window transparency/opacity slider.
 
 Tabbed editor (multiple files open).
 
-Drag‑and‑drop of files onto editor.
+Drag-and-drop of files onto editor.
 
-Auto‑reload externally changed files.
+Auto-reload externally changed files.
 
 Session restore (open files, breakpoints, etc.).
 
@@ -52,9 +52,9 @@ Code folding for sections and macros.
 1.2 Editor Features (30)
 Syntax highlighting for 6502 assembly (mnemonics, directives, labels, comments, numbers).
 
-Auto‑indentation and smart indent.
+Auto-indentation and smart indent.
 
-Auto‑completion for mnemonics and labels.
+Auto-completion for mnemonics and labels.
 
 Code snippets (e.g., loop, macro, if).
 
@@ -113,7 +113,7 @@ Diff view between editor and last saved version.
 1.3 Register & Status Display (25)
 Live updating register values (A, X, Y, PC, SP, P).
 
-Status flags shown as individual LEDs (N,V,‑,B,D,I,Z,C).
+Status flags shown as individual LEDs (N,V,-,B,D,I,Z,C).
 
 Register history graph (show changes over time).
 
@@ -143,7 +143,7 @@ Show interrupt status (IRQ, NMI pending).
 
 Register change highlight (flash when value changes).
 
-Color‑coded registers (e.g., green for changed).
+Color-coded registers (e.g., green for changed).
 
 Hover over flag to see meaning.
 
@@ -162,7 +162,7 @@ Animate register changes (slow motion).
 Show register values as both signed and unsigned.
 
 1.4 Memory Viewer & Editor (25)
-Hex dump with ASCII view (side‑by‑side).
+Hex dump with ASCII view (side-by-side).
 
 Configurable bytes per row (8, 16, 32).
 
@@ -174,7 +174,7 @@ Search memory (hex string or ASCII).
 
 Search next/previous.
 
-Edit bytes in place (double‑click).
+Edit bytes in place (double-click).
 
 Fill memory range with value.
 
@@ -188,7 +188,7 @@ Memory map visualisation (used/free blocks).
 
 Show symbols/labels over addresses.
 
-Mark ROM areas as read‑only.
+Mark ROM areas as read-only.
 
 Show memory protection flags (R/W/X).
 
@@ -251,7 +251,7 @@ Collapsible blocks (subroutines).
 
 Call graph generation from disassembly.
 
-Cross‑reference listing.
+Cross-reference listing.
 
 Dead code detection.
 
@@ -259,7 +259,7 @@ Show instruction frequency histogram.
 
 Show jump/call statistics.
 
-Disassembly with pseudo‑ops for data.
+Disassembly with pseudo-ops for data.
 
 Copy disassembly line to clipboard.
 
@@ -298,7 +298,7 @@ Loop constructs in scripts.
 
 Show last command output.
 
-Auto‑scroll to bottom.
+Auto-scroll to bottom.
 
 Pause console scrolling.
 
@@ -311,7 +311,7 @@ Show/hide toolbars.
 
 Menu bar with shortcuts.
 
-Right‑click context menus in all views.
+Right-click context menus in all views.
 
 Quick access buttons for common actions.
 
@@ -341,7 +341,7 @@ Reset and restart.
 
 Show/hide panels via menu.
 
-Panel auto‑hide.
+Panel auto-hide.
 
 Status bar with CPU info and messages.
 
@@ -372,7 +372,7 @@ Export/import key bindings.
 
 Reset key bindings to default.
 
-Support for left‑handed layout.
+Support for left-handed layout.
 
 Sticky keys for special actions.
 
@@ -382,9 +382,9 @@ Touch support (gestures).
 
 Magnifier integration.
 
-Color‑blind friendly themes.
+Color-blind friendly themes.
 
-User‑defined color schemes.
+User-defined color schemes.
 
 1.9 Notification & Feedback (15)
 Build success/failure notifications.
@@ -401,7 +401,7 @@ Sound effects for events (optional).
 
 Log area with activity feed.
 
-Error list with click‑to‑navigate.
+Error list with click-to-navigate.
 
 Warning list.
 
@@ -415,59 +415,59 @@ Status bar messages.
 
 Debugging tips popup.
 
-First‑run wizard.
+First-run wizard.
 
 2. Assembler & Compilation (100+)
-2.1 Directives & Pseudo‑Ops (25)
-.org – set program origin.
+2.1 Directives & Pseudo-Ops (25)
+.org -- set program origin.
 
-.byte / .db – define bytes.
+.byte / .db -- define bytes.
 
-.word / .dw – define 16‑bit words.
+.word / .dw -- define 16-bit words.
 
-.asciiz – null‑terminated string.
+.asciiz -- null-terminated string.
 
-.ascii – non‑terminated string.
+.ascii -- non-terminated string.
 
-.include – include another file.
+.include -- include another file.
 
-.macro – define macro.
+.macro -- define macro.
 
-.endm – end macro.
+.endm -- end macro.
 
-.rept – repeat block.
+.rept -- repeat block.
 
-.irp – iterate over parameters.
+.irp -- iterate over parameters.
 
-.if, .else, .endif – conditional assembly.
+.if, .else, .endif -- conditional assembly.
 
 .ifdef, .ifndef.
 
-.error – force error.
+.error -- force error.
 
-.warning – emit warning.
+.warning -- emit warning.
 
-.list / .nolist – control listing.
+.list / .nolist -- control listing.
 
-.title – program title.
+.title -- program title.
 
-.subtitle – section subtitle.
+.subtitle -- section subtitle.
 
-.page – form feed in listing.
+.page -- form feed in listing.
 
-.align – align to boundary.
+.align -- align to boundary.
 
-.res / .fill – reserve space.
+.res / .fill -- reserve space.
 
-.export – export symbol.
+.export -- export symbol.
 
-.import – import external symbol.
+.import -- import external symbol.
 
-.weak – weak symbol.
+.weak -- weak symbol.
 
-.section – named section.
+.section -- named section.
 
-.end – end of source.
+.end -- end of source.
 
 2.2 Expression Evaluation (15)
 Arithmetic: +, -, *, /, %, <<, >>.
@@ -534,7 +534,7 @@ Macro library include.
 2.4 Error Handling & Reporting (15)
 Line numbers in error messages.
 
-Multi‑line error context.
+Multi-line error context.
 
 Error codes.
 
@@ -579,7 +579,7 @@ Symbol usage count.
 
 Symbol documentation comments.
 
-Symbol auto‑complete.
+Symbol auto-complete.
 
 Symbol address display.
 
@@ -600,7 +600,7 @@ Generate binary image.
 
 Generate Intel HEX file.
 
-Generate Motorola S‑record.
+Generate Motorola S-record.
 
 Generate PRG (C64) file.
 
@@ -646,7 +646,7 @@ All addressing modes: Implied, Accumulator, Immediate, Zero Page, Zero Page X/Y,
 
 Page crossing cycle penalties.
 
-Wrap‑around for zero‑page indexing.
+Wrap-around for zero-page indexing.
 
 JMP indirect bug (6502).
 
@@ -662,7 +662,7 @@ Stack operations.
 
 Reset vector handling.
 
-Read‑modify‑write cycles.
+Read-modify-write cycles.
 
 Instruction timing (cycle accurate).
 
@@ -670,79 +670,79 @@ Illegal opcodes (see below).
 
 65C02 extensions (BRA, PHX, PLX, STZ, TRB, TSB, etc.).
 
-65816 extensions (16‑bit registers, long addressing).
+65816 extensions (16-bit registers, long addressing).
 
 65CE02 extensions (additional registers).
 
-User‑definable instruction hooks.
+User-definable instruction hooks.
 
 3.2 Illegal / Undocumented Opcodes (30)
-ANC – AND with C flag (0x0B, 0x2B).
+ANC -- AND with C flag (0x0B, 0x2B).
 
-ANE – AND with immediate (0x8B).
+ANE -- AND with immediate (0x8B).
 
-ARR – AND with rotate (0x6B).
+ARR -- AND with rotate (0x6B).
 
-ASR – AND then LSR (0x4B).
+ASR -- AND then LSR (0x4B).
 
-DCP – DEC then CMP (0xC7, 0xD7, 0xCF, 0xDF, 0xDB, 0xD3).
+DCP -- DEC then CMP (0xC7, 0xD7, 0xCF, 0xDF, 0xDB, 0xD3).
 
-ISC – INC then SBC (0xE7, 0xF7, 0xEF, 0xFF, 0xFB, 0xF3).
+ISC -- INC then SBC (0xE7, 0xF7, 0xEF, 0xFF, 0xFB, 0xF3).
 
-LAS – LDA with SP (0xBB).
+LAS -- LDA with SP (0xBB).
 
-LAX – LDA + TAX (0xA7, 0xB7, 0xAF, 0xBF, 0xA3, 0xB3).
+LAX -- LDA + TAX (0xA7, 0xB7, 0xAF, 0xBF, 0xA3, 0xB3).
 
-LXA – LAX with immediate (0xAB).
+LXA -- LAX with immediate (0xAB).
 
-RLA – ROL then AND (0x27, 0x37, 0x2F, 0x3F, 0x3B, 0x33).
+RLA -- ROL then AND (0x27, 0x37, 0x2F, 0x3F, 0x3B, 0x33).
 
-RRA – ROR then ADC (0x67, 0x77, 0x6F, 0x7F, 0x7B, 0x73).
+RRA -- ROR then ADC (0x67, 0x77, 0x6F, 0x7F, 0x7B, 0x73).
 
-SAX – STA then TXA (0x87, 0x97, 0x8F, 0x83).
+SAX -- STA then TXA (0x87, 0x97, 0x8F, 0x83).
 
-SBC – alternative (0xEB).
+SBC -- alternative (0xEB).
 
-SHX – store X indexed (0x9E).
+SHX -- store X indexed (0x9E).
 
-SHY – store Y indexed (0x9C).
+SHY -- store Y indexed (0x9C).
 
-SLO – ASL then ORA (0x07, 0x17, 0x0F, 0x1F, 0x1B, 0x13).
+SLO -- ASL then ORA (0x07, 0x17, 0x0F, 0x1F, 0x1B, 0x13).
 
-SRE – LSR then EOR (0x47, 0x57, 0x4F, 0x5F, 0x5B, 0x53).
+SRE -- LSR then EOR (0x47, 0x57, 0x4F, 0x5F, 0x5B, 0x53).
 
-TAS – transfer to SP (0x9B).
+TAS -- transfer to SP (0x9B).
 
-XAA – XOR with immediate (0x8B).
+XAA -- XOR with immediate (0x8B).
 
-AHX – AND with index (0x93, 0x9F).
+AHX -- AND with index (0x93, 0x9F).
 
-AXS – AND with SBC (0xCB).
+AXS -- AND with SBC (0xCB).
 
-DOP – double NOP (0x1C, 0x3C, 0x5C, 0x7C, 0xDC, 0xFC).
+DOP -- double NOP (0x1C, 0x3C, 0x5C, 0x7C, 0xDC, 0xFC).
 
-TOP – triple NOP (0x0C, 0x14, 0x34, 0x54, 0x74, 0xD4, 0xF4).
+TOP -- triple NOP (0x0C, 0x14, 0x34, 0x54, 0x74, 0xD4, 0xF4).
 
-JAM – crash (0x02, 0x12, 0x22, 0x32, 0x42, 0x52, 0x62, 0x72, 0x92, 0xB2, 0xD2, 0xF2).
+JAM -- crash (0x02, 0x12, 0x22, 0x32, 0x42, 0x52, 0x62, 0x72, 0x92, 0xB2, 0xD2, 0xF2).
 
 NOP variants (0x1A, 0x3A, 0x5A, 0x7A, 0xDA, 0xEA).
 
-SAX – store A & X.
+SAX -- store A & X.
 
-SHA – store A & X indirect.
+SHA -- store A & X indirect.
 
-SHY – store Y indirect.
+SHY -- store Y indirect.
 
-SHX – store X indirect.
+SHX -- store X indirect.
 
-ANC – AND with carry.
+ANC -- AND with carry.
 
 3.3 Timing & Accuracy (20)
-Cycle‑accurate emulation.
+Cycle-accurate emulation.
 
 Page crossing penalties for all indexed modes.
 
-Read‑modify‑write cycles with dummy reads.
+Read-modify-write cycles with dummy reads.
 
 Interrupt latency (7 cycles).
 
@@ -768,7 +768,7 @@ Clock frequency configuration (1 MHz, 2 MHz, etc.).
 
 Clock divider for peripherals.
 
-Cycle‑stealing for DMA.
+Cycle-stealing for DMA.
 
 Bus arbitration.
 
@@ -807,16 +807,16 @@ Automatic saving of registers.
 
 Interrupt vector relocation (for 65816).
 
-Non‑maskable interrupt (NMI).
+Non-maskable interrupt (NMI).
 
 3.5 Register & Flag Management (20)
-8‑bit A, X, Y.
+8-bit A, X, Y.
 
-16‑bit PC.
+16-bit PC.
 
-8‑bit SP.
+8-bit SP.
 
-8‑bit P (flags).
+8-bit P (flags).
 
 Flag definitions: N (bit7), V (bit6), B (bit4), D (bit3), I (bit2), Z (bit1), C (bit0).
 
@@ -834,7 +834,7 @@ Overflow flag for signed overflow.
 
 Break flag for BRK.
 
-65816: 16‑bit A, X, Y, and direct page.
+65816: 16-bit A, X, Y, and direct page.
 
 65816: Program bank register.
 
@@ -859,11 +859,11 @@ Enable/disable illegal opcodes.
 
 Enable/disable decimal mode.
 
-Enable/disable cycle‑accuracy.
+Enable/disable cycle-accuracy.
 
 Enable/disable NMI/IRQ.
 
-User‑defined instruction hooks (callback).
+User-defined instruction hooks (callback).
 
 Instruction logging (to file).
 
@@ -885,11 +885,11 @@ Region overlay (multiple banks).
 
 Bank switching support.
 
-Zero page region (0x0000‑0x00FF).
+Zero page region (0x0000-0x00FF).
 
-Stack region (0x0100‑0x01FF).
+Stack region (0x0100-0x01FF).
 
-ROM region (read‑only).
+ROM region (read-only).
 
 RAM region (read/write).
 
@@ -897,7 +897,7 @@ I/O region (with callback).
 
 Mirroring (aliasing).
 
-Memory‑mapped I/O.
+Memory-mapped I/O.
 
 Video memory region.
 
@@ -907,11 +907,11 @@ Cartridge memory (banks).
 
 RAM expansion (e.g., 16KB, 32KB).
 
-Flash memory (write‑once).
+Flash memory (write-once).
 
-EEPROM (byte‑writable).
+EEPROM (byte-writable).
 
-Battery‑backed RAM (save states).
+Battery-backed RAM (save states).
 
 Configurable address bus width.
 
@@ -928,21 +928,21 @@ Read hook (callback on read).
 
 Write hook (callback on write).
 
-Pre‑read hook.
+Pre-read hook.
 
-Post‑write hook.
+Post-write hook.
 
-Read‑breakpoint (trigger on read).
+Read-breakpoint (trigger on read).
 
-Write‑breakpoint (trigger on write).
+Write-breakpoint (trigger on write).
 
-Access‑breakpoint (trigger on any access).
+Access-breakpoint (trigger on any access).
 
-Read‑only protection (raise exception).
+Read-only protection (raise exception).
 
-Write‑protected (raise exception).
+Write-protected (raise exception).
 
-Execute‑only (for code).
+Execute-only (for code).
 
 Access counting.
 
@@ -950,7 +950,7 @@ Access logging.
 
 Access time simulation (wait states).
 
-Read‑modify‑write hook.
+Read-modify-write hook.
 
 DMA access hook.
 
@@ -1030,7 +1030,7 @@ Memory usage pie chart.
 
 Memory fragmentation visualization.
 
-Memory diff view (side‑by‑side).
+Memory diff view (side-by-side).
 
 Memory diff as unified format.
 
@@ -1089,7 +1089,7 @@ Breakpoint hit count (stop after N hits).
 
 Breakpoint ignore count (skip first N).
 
-Temporary breakpoint (auto‑remove).
+Temporary breakpoint (auto-remove).
 
 Log breakpoint (print, don't stop).
 
@@ -1199,7 +1199,7 @@ I/O trace.
 
 DMA trace.
 
-Cycle‑accurate trace.
+Cycle-accurate trace.
 
 Trace with timestamps.
 
@@ -1223,7 +1223,7 @@ Trace comparison.
 
 Trace compression.
 
-Trace streaming (real‑time to file).
+Trace streaming (real-time to file).
 
 Trace statistics (instruction count, etc.).
 
@@ -1256,11 +1256,11 @@ History export/import.
 
 History compression.
 
-History per‑instruction.
+History per-instruction.
 
-History per‑cycle.
+History per-cycle.
 
-History per‑memory access.
+History per-memory access.
 
 History with annotated events.
 
@@ -1321,7 +1321,7 @@ Profiler for specific PC range.
 
 Profiler for specific time slice.
 
-Profiler on‑the‑fly enable/disable.
+Profiler on-the-fly enable/disable.
 
 5.6 Snapshots & Compare (20)
 Take state snapshot (registers, memory).
@@ -1334,15 +1334,15 @@ Compare two snapshots (registers).
 
 Compare two snapshots (memory).
 
-Difference display (color‑coded).
+Difference display (color-coded).
 
 Restore from snapshot.
 
 Snapshot export/import.
 
-Auto‑snapshot on build.
+Auto-snapshot on build.
 
-Auto‑snapshot on break.
+Auto-snapshot on break.
 
 Snapshot on timer.
 
@@ -1389,9 +1389,9 @@ Conditional expressions.
 
 String operations.
 
-Built‑in functions (e.g., min, max, abs).
+Built-in functions (e.g., min, max, abs).
 
-User‑defined variables.
+User-defined variables.
 
 Expression history.
 
@@ -1406,7 +1406,7 @@ Read/write memory from script.
 
 Read/write registers from script.
 
-Single‑step from script.
+Single-step from script.
 
 Continue execution from script.
 
@@ -1439,7 +1439,7 @@ Remote register access.
 
 Remote breakpoints.
 
-Remote single‑step.
+Remote single-step.
 
 Remote continue.
 
@@ -1461,9 +1461,9 @@ Remote encryption.
 6.1 Display/Video (30)
 Framebuffer display (e.g., 64x64, 256x240).
 
-Character‑based display (e.g., 80x25 text).
+Character-based display (e.g., 80x25 text).
 
-Tile‑based graphics (like NES).
+Tile-based graphics (like NES).
 
 Bitmap modes.
 
@@ -1491,9 +1491,9 @@ Screen rotation.
 
 Screen mirroring.
 
-Multi‑monitor support.
+Multi-monitor support.
 
-Full‑screen display.
+Full-screen display.
 
 Screenshot capture.
 
@@ -1503,7 +1503,7 @@ Frame rate limiter.
 
 Frame skip.
 
-V‑sync.
+V-sync.
 
 Display brightness/contrast.
 
@@ -1528,21 +1528,21 @@ Sawtooth wave generator.
 
 Noise generator.
 
-Pulse‑width modulation (PWM).
+Pulse-width modulation (PWM).
 
 SID (6581/8580) emulation.
 
 POKEY emulation.
 
-AY‑3‑8910 emulation.
+AY-3-8910 emulation.
 
-VIC‑20 sound.
+VIC-20 sound.
 
 NES APU (2x pulse, triangle, noise, DPCM).
 
 SN76489 (TMS9919).
 
-DAC (digital‑to‑analogue).
+DAC (digital-to-analogue).
 
 Audio sample rate conversion.
 
@@ -1581,7 +1581,7 @@ Keyboard mapping (remap keys).
 
 Keyboard macros.
 
-Keyboard auto‑repeat.
+Keyboard auto-repeat.
 
 Keyboard LED indicators.
 
@@ -1609,7 +1609,7 @@ Input scripts.
 
 Keyboard shortcut override.
 
-On‑screen keyboard.
+On-screen keyboard.
 
 Joypad emulation (digital/analog).
 
@@ -1630,7 +1630,7 @@ Hard drive (IDE, SCSI) .HDI.
 
 SD/MMC card (via SPI).
 
-NVRAM (battery‑backed).
+NVRAM (battery-backed).
 
 Flash ROM (save data).
 
@@ -1638,11 +1638,11 @@ Cartridge (ROM, RAM).
 
 Bank switching mappers (MMC1, MMC3, UxROM, etc.).
 
-Loading from file (drag‑and‑drop).
+Loading from file (drag-and-drop).
 
 Saving to file.
 
-Auto‑load from last session.
+Auto-load from last session.
 
 Disk directory view.
 
@@ -1652,7 +1652,7 @@ Disk copy.
 
 Disk formatting.
 
-Disk image conversion (D64 ↔ G64).
+Disk image conversion (D64 <-> G64).
 
 Tape controls (play, stop, rewind).
 
@@ -1664,7 +1664,7 @@ Tape turbo loader support.
 
 Fast loading (skip header).
 
-Write‑protect switch.
+Write-protect switch.
 
 Disk drive speed (PAL/NTSC).
 
@@ -1683,7 +1683,7 @@ I2C bus.
 
 Ethernet (via serial).
 
-Wi‑Fi (ESP8266 emulation).
+Wi-Fi (ESP8266 emulation).
 
 Bluetooth.
 
@@ -1691,7 +1691,7 @@ USB device.
 
 MIDI in/out.
 
-RS‑232 terminal.
+RS-232 terminal.
 
 Telnet server.
 
@@ -1703,9 +1703,9 @@ IRDA.
 
 CAN bus.
 
-1‑Wire bus.
+1-Wire bus.
 
-GPIO pins (bit‑banging).
+GPIO pins (bit-banging).
 
 Network packet capture.
 
@@ -1750,16 +1750,16 @@ Floppy disk controller (8272).
 
 Keyboard controller (8042).
 
-RTC (Real‑Time Clock).
+RTC (Real-Time Clock).
 
 GPIO expander (MCP23017).
 
 6.7 Bus & System (15)
-Address bus (16‑bit, 24‑bit for 65816).
+Address bus (16-bit, 24-bit for 65816).
 
-Data bus (8‑bit, 16‑bit).
+Data bus (8-bit, 16-bit).
 
-Control bus (R/W, φ0, φ1, φ2, SYNC, RDY, RESET, IRQ, NMI).
+Control bus (R/W, phi0, phi1, phi2, SYNC, RDY, RESET, IRQ, NMI).
 
 Bus arbitration.
 
@@ -1889,7 +1889,7 @@ Conflict resolution.
 
 Merge tool.
 
-Diff view (side‑by‑side).
+Diff view (side-by-side).
 
 Patch creation.
 
@@ -1903,7 +1903,7 @@ Ignore files.
 
 LFS (Large File Storage).
 
-Hooks (pre‑commit, post‑commit).
+Hooks (pre-commit, post-commit).
 
 Remote management.
 
@@ -2096,7 +2096,7 @@ SIMD for frame processing.
 
 GPU acceleration (OpenCL, CUDA).
 
-Multi‑threading (separate CPU, audio, video).
+Multi-threading (separate CPU, audio, video).
 
 Asynchronous I/O.
 
@@ -2106,11 +2106,11 @@ Memory pooling.
 
 Object reuse.
 
-Cache‑friendly data structures.
+Cache-friendly data structures.
 
-Profile‑guided optimization.
+Profile-guided optimization.
 
-Link‑time optimization.
+Link-time optimization.
 
 Binary translation (static recompilation).
 
@@ -2139,7 +2139,7 @@ Overhead of debug features.
 
 Toggle debug features for speed.
 
-Adaptive speed (auto‑adjust).
+Adaptive speed (auto-adjust).
 
 Speed throttle (limit to 100%).
 
@@ -2176,13 +2176,13 @@ Number of concurrent tasks.
 
 Disk cache.
 
-Memory mapping (file → memory).
+Memory mapping (file -> memory).
 
 Resource monitoring dashboard.
 
 Resource usage warning.
 
-Auto‑scale resources.
+Auto-scale resources.
 
 Resource cleanup on exit.
 
@@ -2210,17 +2210,17 @@ Remote snapshot.
 
 Remote control (start/stop/step).
 
-Web‑based UI (HTML5).
+Web-based UI (HTML5).
 
 REST API for emulator control.
 
-WebSocket for real‑time events.
+WebSocket for real-time events.
 
-Multi‑user collaboration (shared session).
+Multi-user collaboration (shared session).
 
-Peer‑to‑peer sync.
+Peer-to-peer sync.
 
-Cloud‑based storage of projects.
+Cloud-based storage of projects.
 
 Cloud build service.
 
@@ -2259,7 +2259,7 @@ Screen sharing.
 
 Remote pointer.
 
-Co‑debugging (two users control).
+Co-debugging (two users control).
 
 Version control integration for collaboration.
 
@@ -2308,7 +2308,7 @@ User manual (PDF/HTML).
 
 Quick start guide.
 
-Tutorials (step‑by‑step).
+Tutorials (step-by-step).
 
 Video tutorials.
 
@@ -2411,15 +2411,15 @@ Recommended reading.
 12.1 Configuration & Settings (15)
 Global settings (ini/registry).
 
-Project‑specific settings.
+Project-specific settings.
 
-User‑defined themes.
+User-defined themes.
 
 Custom fonts.
 
 Default file types.
 
-Auto‑save intervals.
+Auto-save intervals.
 
 Backup settings.
 
@@ -2429,7 +2429,7 @@ Network settings.
 
 Privacy settings.
 
-Telemetry opt‑out.
+Telemetry opt-out.
 
 Language selection.
 
@@ -2496,7 +2496,7 @@ Internationalization (i18n) support.
 
 Language packs.
 
-Translators’ guide.
+Translators' guide.
 
 Date/time format.
 

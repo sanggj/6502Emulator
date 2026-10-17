@@ -45,17 +45,27 @@ class Emulator {
     // Interrupt line control (edge/level modeled inside the CPU).
     void requestNmi() noexcept { cpu_.setNmiLine(true); }
     void clearNmi() noexcept { cpu_.setNmiLine(false); }
-    void requestIrq(bool asserted) noexcept { cpu_.setIrqLine(asserted); }
+    // IRQ line is shared: requestIrq() drives an *external* source (terminal
+    // `irq` command) and the APU frame IRQ drives the same CPU line. The
+    // line is asserted while either source asserts, released only when
+    // neither does (see syncIrqLine in emulator.cpp).
+    void requestIrq(bool asserted) noexcept;
+    // True while the terminal `irq` command's EXTERNAL source drives the
+    // line (the APU frame IRQ is tracked separately). Savestate trailer bit3.
+    bool externalIrqAsserted() const noexcept { return externalIrq_; }
     void setCoreVariant(CPU::Core core) noexcept { cpu_.setCore(core); }
     CPU::Core coreVariant() const noexcept { return cpu_.core(); }
 
   private:
+    void syncIrqLine() noexcept;
+
     Memory memory_;
     CPU cpu_;
     Assembler assembler_;
     AssembledProgram program_;
     std::string source_;
     bool running_ = false;
+    bool externalIrq_ = false;
     uint8_t frameCounter_ = 0;
     std::unique_ptr<Apu> apu_;
 };

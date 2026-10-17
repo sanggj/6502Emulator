@@ -136,12 +136,17 @@ void appStart() {
 }
 
 void appPause() {
-    // A pending run-to-cursor must not leak its temporary breakpoint.
-    if (g_app.runToAddress >= 0 && g_app.runToBpOurs)
-        g_app.dbg.removeBreakpoint(static_cast<uint16_t>(g_app.runToAddress));
-    g_app.runToAddress = -1;
-    g_app.runToBpOurs = false;
-    g_app.emu.pause();
+    {
+        // Breakpoint-vector mutations happen under emulatorMutex(): the
+        // remote worker iterates the same vector under that lock (remote.cpp).
+        std::lock_guard<std::mutex> guard(remote::emulatorMutex());
+        // A pending run-to-cursor must not leak its temporary breakpoint.
+        if (g_app.runToAddress >= 0 && g_app.runToBpOurs)
+            g_app.dbg.removeBreakpoint(static_cast<uint16_t>(g_app.runToAddress));
+        g_app.runToAddress = -1;
+        g_app.runToBpOurs = false;
+        g_app.emu.pause();
+    }
     setStatusBar("Paused");
 }
 
@@ -194,17 +199,22 @@ void appRunToSelected() {
     }
     const uint16_t addr = it->second;
     // Run-to-cursor as a ONE-SHOT breakpoint: the debugger stops exactly on
-    // the target address.
-    bool userBpThere = false;
-    for (const auto &bp : g_app.dbg.breakpoints())
-        if (bp.address == addr) {
-            userBpThere = true;
-            break;
-        }
-    g_app.runToAddress = addr;
-    g_app.runToBpOurs = !userBpThere;
-    if (!userBpThere) g_app.dbg.addBreakpoint(addr);
-    g_app.emu.start();
+    // the target address. The scan of the breakpoint vector and the install
+    // must happen under emulatorMutex() - the remote worker iterates the
+    // same vector under that lock (remote.cpp).
+    {
+        std::lock_guard<std::mutex> guard(remote::emulatorMutex());
+        bool userBpThere = false;
+        for (const auto &bp : g_app.dbg.breakpoints())
+            if (bp.address == addr) {
+                userBpThere = true;
+                break;
+            }
+        g_app.runToAddress = addr;
+        g_app.runToBpOurs = !userBpThere;
+        if (!userBpThere) g_app.dbg.addBreakpoint(addr);
+        g_app.emu.start();
+    }
     setStatusBar("Running to cursor");
 }
 

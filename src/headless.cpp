@@ -9,10 +9,14 @@
 #include "settings.hpp"
 
 #include <algorithm>
+#include <cctype>
+#include <cerrno>
 #include <chrono>
 #include <cstdarg>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
+#include <cstdint>
 #include <filesystem>
 #include <fstream>
 #include <mutex>
@@ -154,51 +158,114 @@ int headlessMain(const std::string &commandLine) {
     bool imageMode = false;
     uint32_t imageCovLow = 0x8000, imageCovHigh = 0xFFFF;
 
+    // Strict unsigned parse: rejects empty text, signs, leading whitespace,
+    // trailing junk and overflow, printing a JSON error so the caller can
+    // exit 2. Numbers are always base 10 except an explicit 0x/0X prefix -
+    // strtoull's base-0 auto-detection would otherwise accept " 5" (leading
+    // whitespace) and read "0777" as octal 511.
+    auto parseNumber = [](const char *flag, const std::string &text, uint64_t &out,
+                          uint64_t max) -> bool {
+        const char *s = text.c_str();
+        const bool signedText = text.empty() || s[0] == '-' || s[0] == '+';
+        const bool wsText = std::isspace(static_cast<unsigned char>(s[0])) != 0;
+        int base = 10;
+        if (s[0] == '0' && (s[1] == 'x' || s[1] == 'X')) base = 16;
+        char *end = nullptr;
+        errno = 0;
+        const unsigned long long n = (signedText || wsText) ? 0ull : std::strtoull(s, &end, base);
+        if (signedText || wsText || errno == ERANGE || end == s || *end != '\0' || n > max) {
+            hprint("{\"ok\":false,\"error\":\"invalid value for %s: %s\"}\n", flag,
+                   jsonEscape(text).c_str());
+            return false;
+        }
+        out = static_cast<uint64_t>(n);
+        return true;
+    };
+
+    // Flag values are consumed exactly once (the ++i inside value()). A
+    // value-taking flag in last position is an error ("missing value for
+    // <flag>"), not "unknown argument". Repeated flags take the LAST value
+    // (plain re-assignment); -D is the exception and accumulates.
     for (std::size_t i = 0; i < args.size(); ++i) {
         const std::string &a = args[i];
-        auto value = [&]() -> const std::string & { return i + 1 < args.size() ? args[i + 1] : a; };
+        bool ok = true;
+        auto value = [&](const char *flag) -> std::string {
+            if (i + 1 >= args.size()) {
+                hprint("{\"ok\":false,\"error\":\"missing value for %s\"}\n", flag);
+                ok = false;
+                return {};
+            }
+            return args[++i];
+        };
         if (a == "--headless") continue;
-        if (a == "--asm" && i + 1 < args.size())
-            asmFile = value(), ++i;
-        else if (a == "--image" && i + 1 < args.size())
-            imageFile = value(), ++i;
-        else if (a == "--base" && i + 1 < args.size())
-            base = static_cast<uint32_t>(std::strtoul(value().c_str(), nullptr, 0)), ++i;
-        else if (a == "--instr" && i + 1 < args.size())
-            budgetInstr = std::strtoull(value().c_str(), nullptr, 0), ++i;
-        else if (a == "--cycles" && i + 1 < args.size())
-            budgetCycles = std::strtoull(value().c_str(), nullptr, 0), ++i;
-        else if (a == "--screenshot" && i + 1 < args.size())
-            screenshotFile = value(), ++i;
-        else if (a == "--waverec" && i + 1 < args.size())
-            wavFile = value(), ++i;
-        else if (a == "--remote" && i + 1 < args.size())
-            remotePort = std::atoi(value().c_str()), ++i;
-        else if (a == "--map" && i + 1 < args.size())
-            mapFile = value(), ++i;
-        else if (a == "--xref" && i + 1 < args.size())
-            xrefFile = value(), ++i;
-        else if (a == "--prg" && i + 1 < args.size())
-            prgFile = value(), ++i;
-        else if (a == "--nes" && i + 1 < args.size())
-            nesFile = value(), ++i;
-        else if (a == "--mesen-trace" && i + 1 < args.size())
-            mesenTraceFile = value(), ++i;
-        else if (a == "-D" && i + 1 < args.size()) {
-            definesArg = definesArg.empty() ? value() : definesArg + "," + value();
-            ++i;
-        } else if (a == "--core" && i + 1 < args.size())
-            coreArg = value(), ++i;
-        else if (a == "--link" && i + 1 < args.size())
-            extraSources = value(), ++i;
-        else if (a == "--run")
-            runProgram = true;
-        else {
-            hprint("{\"ok\":false,\"error\":\"unknown argument %s\"}\n", jsonEscape(a).c_str());
-            return 2;
+
+        // String-valued flags share one path.
+        std::string *target = nullptr;
+        if (a == "--asm")
+            target = &asmFile;
+        else if (a == "--image")
+            target = &imageFile;
+        else if (a == "--screenshot")
+            target = &screenshotFile;
+        else if (a == "--waverec")
+            target = &wavFile;
+        else if (a == "--map")
+            target = &mapFile;
+        else if (a == "--xref")
+            target = &xrefFile;
+        else if (a == "--prg")
+            target = &prgFile;
+        else if (a == "--nes")
+            target = &nesFile;
+        else if (a == "--mesen-trace")
+            target = &mesenTraceFile;
+        else if (a == "--link")
+            target = &extraSources;
+        else if (a == "--core")
+            target = &coreArg;
+        if (target) {
+            const std::string v = value(a.c_str());
+            if (!ok) return 2;
+            *target = v;
+            continue;
         }
+
+        if (a == "-D" || a == "--base" || a == "--instr" || a == "--cycles" || a == "--remote") {
+            const std::string v = value(a.c_str());
+            if (!ok) return 2;
+            if (a == "-D") {
+                definesArg = definesArg.empty() ? v : definesArg + "," + v;
+            } else if (a == "--base") {
+                uint64_t n = 0;
+                if (!parseNumber("--base", v, n, 0xFFFF)) return 2; // > $FFFF would truncate
+                base = static_cast<uint32_t>(n);
+            } else if (a == "--instr") {
+                if (!parseNumber("--instr", v, budgetInstr, UINT64_MAX)) return 2;
+            } else if (a == "--cycles") {
+                if (!parseNumber("--cycles", v, budgetCycles, UINT64_MAX)) return 2;
+            } else { // --remote
+                uint64_t n = 0;
+                if (!parseNumber("--remote", v, n, 65535)) return 2;
+                if (n == 0) { // 0 is not a valid TCP port (absent --remote stays off)
+                    hprint("{\"ok\":false,\"error\":\"invalid value for --remote: %s\"}\n",
+                           jsonEscape(v).c_str());
+                    return 2;
+                }
+                remotePort = static_cast<int>(n);
+            }
+            continue;
+        }
+
+        if (a == "--run") {
+            runProgram = true;
+            continue;
+        }
+        hprint("{\"ok\":false,\"error\":\"unknown argument %s\"}\n", jsonEscape(a).c_str());
+        return 2;
     }
 
+    // Zero budget with --run is invalid, not a silent no-op: exit 2 with a
+    // JSON error (kept from the original behaviour; see test b.(i)).
     if (runProgram && budgetInstr == 0 && budgetCycles == 0) {
         hprint("{\"ok\":false,\"error\":\"--run requires --instr or --cycles\"}\n");
         return 2;
@@ -208,16 +275,28 @@ int headlessMain(const std::string &commandLine) {
     Debugger dbg(emu);
     dbg.setCoverageEnabled(true);
     emu.apu().init();
-    if (!wavFile.empty()) emu.apu().startWavRecord(wavFile);
+    if (!wavFile.empty() && !emu.apu().startWavRecord(wavFile)) {
+        hprint("{\"ok\":false,\"error\":\"cannot start wav recording: %s\"}\n",
+               jsonEscape(wavFile).c_str());
+        return 2;
+    }
 
     RemoteServer &remoteSrv = RemoteServer::instance();
     if (remotePort > 0) {
         std::string err;
-        if (!remoteSrv.start(emu, dbg, remotePort, err))
-            hprint("remote: %s\n", err.c_str());
-        else
-            hprint("remote: %s\n", err.c_str());
+        if (!remoteSrv.start(emu, dbg, remotePort, err)) {
+            hprint("{\"ok\":false,\"error\":\"remote: %s\"}\n", jsonEscape(err).c_str());
+            return 2;
+        }
+        hprint("remote: %s\n", err.c_str());
     }
+    // Stops the remote server on EVERY exit path from here down (including
+    // the early error returns); RemoteServer::stop() is a no-op when never
+    // started, so this is safe unconditionally.
+    struct RemoteGuard {
+        RemoteServer &srv;
+        ~RemoteGuard() { srv.stop(); }
+    } remoteGuard{remoteSrv};
 
     std::string message;
     if (!asmFile.empty()) {
@@ -305,7 +384,13 @@ int headlessMain(const std::string &commandLine) {
     } else if (!imageFile.empty()) {
         std::string err;
         ines::NesRom rom;
-        if (imageFile.size() > 4 && iendsWith(imageFile, ".nes") && ines::loadFile(imageFile, rom, err)) {
+        if (iendsWith(imageFile, ".nes")) {
+            // A .nes path must load as an iNES image; never fall back to raw
+            // binary loading (that would map the 16-byte header as CPU memory).
+            if (!ines::loadFile(imageFile, rom, err)) {
+                hprint("{\"ok\":false,\"error\":\"%s\"}\n", jsonEscape(err).c_str());
+                return 2;
+            }
             if (!ines::mapInto(emu, rom, err)) {
                 hprint("{\"ok\":false,\"error\":\"%s\"}\n", jsonEscape(err).c_str());
                 return 2;
@@ -390,7 +475,10 @@ int headlessMain(const std::string &commandLine) {
                 rgb[o + 2] = static_cast<uint8_t>((argb >> 16) & 0xFF);
             }
         std::string err;
-        writeBmp24(screenshotFile, 64, 64, rgb, err);
+        if (!writeBmp24(screenshotFile, 64, 64, rgb, err)) {
+            hprint("{\"ok\":false,\"error\":\"screenshot: %s\"}\n", jsonEscape(err).c_str());
+            return 2;
+        }
         hprint("screenshot: %s (%s)\n", screenshotFile.c_str(), err.c_str());
     }
 
@@ -435,6 +523,5 @@ int headlessMain(const std::string &commandLine) {
            static_cast<unsigned long long>(executed), static_cast<unsigned long long>(c.getTotalCycles()),
            c.halted() ? "true" : "false", c.PC, coveragePct, static_cast<long long>(elapsedMs));
 
-    remoteSrv.stop();
-    return c.halted() ? 3 : 0;
+    return c.halted() ? 3 : 0; // remoteGuard stops the server
 }

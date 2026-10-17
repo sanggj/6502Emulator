@@ -2,6 +2,7 @@
 // (main.cpp) takes precedence; on Linux, macOS and other systems this builds
 // the same engine as a headless CLI tool with identical flags.
 #include "headless.hpp"
+#include "settings.hpp"
 
 #include <string>
 
@@ -11,5 +12,6 @@ int main(int argc, char **argv) {
         if (i > 1) args += ' ';
         args += argv[i];
     }
+    Settings::load(); // same pre-dispatch INI load as WinMain (src\main.cpp ~844)
     return headlessMain(args);
 }

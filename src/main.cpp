@@ -411,19 +411,29 @@ void tickEmulation() {
         // Turbo / fast-forward while Tab is held.
         if (Settings::get().turboEnabled && (GetAsyncKeyState(VK_TAB) & 0x8000) != 0) budget *= 8;
         uint64_t executed = 0;
+        // Run-to-cursor: the one-shot breakpoint pauses the emulator exactly
+        // on the target instruction from inside runInstructions. Reading
+        // cpu().PC and dropping the one-shot breakpoint must happen UNDER
+        // emulatorMutex() - the remote server can step/inspect the CPU the
+        // moment the lock is released.
+        bool reachedRunTo = false;
         {
             std::lock_guard<std::mutex> guard(remote::emulatorMutex());
             executed = g_app.dbg.runInstructions(budget);
+            if (g_app.runToAddress >= 0 && !g_app.emu.running()) {
+                reachedRunTo = g_app.dbg.lastStopWasBreakpoint() &&
+                               g_app.emu.cpu().PC == static_cast<uint16_t>(g_app.runToAddress);
+                // ANY stop ends a run-to-cursor: drop the one-shot breakpoint here
+                // so it cannot leak into the next run when a different breakpoint
+                // (or a halt/watchpoint) stopped the emulation first.
+                if (g_app.runToBpOurs)
+                    g_app.dbg.removeBreakpoint(static_cast<uint16_t>(g_app.runToAddress));
+                g_app.runToAddress = -1;
+                g_app.runToBpOurs = false;
+            }
         }
         instructionsThisSecond += static_cast<int>(executed);
-        // Run-to-cursor: the one-shot breakpoint pauses the emulator exactly
-        // on the target instruction from inside runInstructions.
-        if (g_app.runToAddress >= 0 && !g_app.emu.running() && g_app.dbg.lastStopWasBreakpoint() &&
-            g_app.emu.cpu().PC == static_cast<uint16_t>(g_app.runToAddress)) {
-            if (g_app.runToBpOurs)
-                g_app.dbg.removeBreakpoint(static_cast<uint16_t>(g_app.runToAddress));
-            g_app.runToAddress = -1;
-            g_app.runToBpOurs = false;
+        if (reachedRunTo) {
             g_app.term.append(
                 TermView::Role::Warn, "[RUNTO] reached $" + [] {
                     char b[8];
@@ -791,6 +801,9 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     case WM_DESTROY:
         KillTimer(hwnd, TIMER_ID);
         timeEndPeriod(1);
+        // RemoteServer::stop() shuts the client socket down before joining the
+        // worker, so it is safe to call here even while a client is connected.
+        RemoteServer::instance().stop();
         if (g_accel) DestroyAcceleratorTable(g_accel);
         PostQuitMessage(0);
         return 0;
@@ -800,15 +813,39 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     return DefWindowProcA(hwnd, msg, wParam, lParam);
 }
 
+// Exact-token match for a flag in the raw command line (quote-aware, the same
+// split rules as headless.cpp's splitArgs) so a file name that merely CONTAINS
+// "--headless" does not dispatch the GUI into headless mode.
+bool cmdLineHasFlag(const char *cmdLine, const char *flag) {
+    if (!cmdLine) return false;
+    std::string token;
+    bool quote = false;
+    for (const char *p = cmdLine;; ++p) {
+        const char c = *p;
+        const bool end = c == '\0';
+        if (c == '"')
+            quote = !quote;
+        else if (end || (!quote && (c == ' ' || c == '\t'))) {
+            if (token == flag) return true;
+            token.clear();
+            if (end) return false;
+        } else
+            token += c;
+    }
+}
+
 } // namespace
 
 int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR cmdLine, int) {
     installCrashHandler();
-    if (cmdLine && strstr(cmdLine, "--headless")) {
+    // Load INI settings BEFORE dispatching headless: the CLI honours the same
+    // 6502_ide.ini (include paths, warn level, defines). Settings::load() has
+    // no window/GUI dependency (settings.cpp:148 only reads files/env).
+    Settings::load();
+    if (cmdLineHasFlag(cmdLine, "--headless")) {
         return headlessMain(cmdLine);
     }
 
-    Settings::load();
     setThemeIndex(Settings::get().themeIndex);
 
     WNDCLASSA wc{};
