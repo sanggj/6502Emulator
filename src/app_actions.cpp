@@ -85,11 +85,19 @@ void maybeAutoRebuild() {
 
 } // namespace
 
+// Drops a pending run-to-cursor one-shot breakpoint. Callers MUST hold
+// remote::emulatorMutex(): it mutates the breakpoint vector (remote.cpp
+// iterates it under that lock).
+void appClearRunToCursor() {
+    if (g_app.runToAddress >= 0 && g_app.runToBpOurs)
+        g_app.dbg.removeBreakpoint(static_cast<uint16_t>(g_app.runToAddress));
+    g_app.runToAddress = -1;
+    g_app.runToBpOurs = false;
+}
+
 void appBurn(bool andRun) {
-    g_app.emu.pause();
     std::string msg;
     const std::string source = g_app.editor.getText();
-    g_app.dbg.clear();
     AssembleOptions options;
     try {
         options.basePath =
@@ -97,7 +105,18 @@ void appBurn(bool andRun) {
     } catch (...) {
         options.basePath = ".";
     }
-    if (!g_app.emu.assembleAndBurn(source, msg)) {
+    bool burned = false;
+    {
+        // Emulator (pause/burn/start) and breakpoint-vector mutations happen
+        // under emulatorMutex() - the lock covers them exactly as
+        // klaus/nestest cover their whole run, and is released before UI.
+        std::lock_guard<std::mutex> guard(remote::emulatorMutex());
+        g_app.emu.pause();
+        g_app.dbg.clear();
+        burned = g_app.emu.assembleAndBurn(source, msg);
+        if (burned && andRun) g_app.emu.start();
+    }
+    if (!burned) {
         g_app.term.append(TermView::Role::Err, "[BUILD]\r\n" + msg + "\r\n");
         setStatusBar("Build failed");
         g_app.editor.setErrorMarks(parseBuildErrorMarks(msg));
@@ -110,7 +129,6 @@ void appBurn(bool andRun) {
     g_app.editor.setErrorMarks({});
     osdToast("Burn OK");
     g_app.disasm.jumpToPc();
-    if (andRun) g_app.emu.start();
 }
 
 void appUpload() {
@@ -137,27 +155,32 @@ void appStart() {
 
 void appPause() {
     {
-        // Breakpoint-vector mutations happen under emulatorMutex(): the
-        // remote worker iterates the same vector under that lock (remote.cpp).
+        // Emulator/CPU and breakpoint-vector mutations happen under
+        // emulatorMutex(): the remote worker steps the CPU and iterates the
+        // breakpoint vector under that lock (remote.cpp).
         std::lock_guard<std::mutex> guard(remote::emulatorMutex());
         // A pending run-to-cursor must not leak its temporary breakpoint.
-        if (g_app.runToAddress >= 0 && g_app.runToBpOurs)
-            g_app.dbg.removeBreakpoint(static_cast<uint16_t>(g_app.runToAddress));
-        g_app.runToAddress = -1;
-        g_app.runToBpOurs = false;
+        appClearRunToCursor();
         g_app.emu.pause();
     }
     setStatusBar("Paused");
 }
 
 void appStepInstruction() {
-    const int cycles = g_app.dbg.step();
+    int cycles = 0;
+    bool stopBp = false, stopWp = false;
+    {
+        std::lock_guard<std::mutex> guard(remote::emulatorMutex());
+        cycles = g_app.dbg.step();
+        stopBp = g_app.dbg.lastStopWasBreakpoint();
+        stopWp = g_app.dbg.lastStopWasWatchpoint();
+    }
     if (cycles == 0) {
-        if (g_app.dbg.lastStopWasBreakpoint()) {
+        if (stopBp) {
             setStatusBar("Breakpoint hit");
             g_app.term.append(TermView::Role::Warn, "[BREAK] Breakpoint hit at PC.\r\n");
             osdToast("Breakpoint hit");
-        } else if (g_app.dbg.lastStopWasWatchpoint()) {
+        } else if (stopWp) {
             setStatusBar("Watchpoint hit");
             g_app.term.append(TermView::Role::Warn, "[WATCH] Watchpoint hit.\r\n");
         } else {
@@ -168,17 +191,33 @@ void appStepInstruction() {
 }
 
 void appReset() {
-    g_app.emu.reset();
-    g_app.dbg.clear();
+    {
+        // Reset + breakpoint clear (and dropping any pending run-to) mutate
+        // emulator/debugger state: same lock as appPause().
+        std::lock_guard<std::mutex> guard(remote::emulatorMutex());
+        appClearRunToCursor();
+        g_app.emu.reset();
+        g_app.dbg.clear();
+    }
     setStatusBar("Reset");
 }
 
 void appStepBack() {
-    termInfo(g_app.dbg.stepBack() ? "rewound one instruction\r\n" : "no history to rewind\r\n");
+    bool rewound;
+    {
+        std::lock_guard<std::mutex> guard(remote::emulatorMutex());
+        rewound = g_app.dbg.stepBack();
+    }
+    termInfo(rewound ? "rewound one instruction\r\n" : "no history to rewind\r\n");
 }
 
 void appStepForward() {
-    termInfo(g_app.dbg.stepForward() ? "replayed one instruction\r\n" : "no future history\r\n");
+    bool replayed;
+    {
+        std::lock_guard<std::mutex> guard(remote::emulatorMutex());
+        replayed = g_app.dbg.stepForward();
+    }
+    termInfo(replayed ? "replayed one instruction\r\n" : "no future history\r\n");
 }
 
 void appRunToSelected() {
@@ -204,6 +243,9 @@ void appRunToSelected() {
     // same vector under that lock (remote.cpp).
     {
         std::lock_guard<std::mutex> guard(remote::emulatorMutex());
+        // Drop any PREVIOUS run-to's one-shot breakpoint first, so a second
+        // run-to cannot orphan the first (or mistake it for a user bp).
+        appClearRunToCursor();
         bool userBpThere = false;
         for (const auto &bp : g_app.dbg.breakpoints())
             if (bp.address == addr) {
@@ -220,15 +262,18 @@ void appRunToSelected() {
 
 void appToggleBreakpointAt(uint16_t address) {
     bool removed = false;
-    for (const auto &bp : g_app.dbg.breakpoints())
-        if (bp.address == address) {
-            removed = true;
-            break;
-        }
-    if (removed)
-        g_app.dbg.removeBreakpoint(address);
-    else
-        g_app.dbg.addBreakpoint(address);
+    {
+        std::lock_guard<std::mutex> guard(remote::emulatorMutex());
+        for (const auto &bp : g_app.dbg.breakpoints())
+            if (bp.address == address) {
+                removed = true;
+                break;
+            }
+        if (removed)
+            g_app.dbg.removeBreakpoint(address);
+        else
+            g_app.dbg.addBreakpoint(address);
+    }
     InvalidateRect(g_app.mainWnd, nullptr, FALSE);
 }
 

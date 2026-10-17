@@ -151,20 +151,46 @@ int run_test_core() {
     CHECK(emu.cpu().getTotalCycles() == 1234);
     std::remove(statePath.c_str());
     const std::string nestest = findTestDataFile("nestest.nes");
-    CHECK(!nestest.empty());
-    if (!nestest.empty()) {
+    if (nestest.empty()) {
+        std::fprintf(stderr, "SKIP: nestest validation (tests\\data\\nestest.nes absent)\n");
+    } else {
+        // Real nestest.nes (kevtris): mapper 0, 16 KiB PRG + 8 KiB CHR.
         ines::NesRom rom;
         std::string ierr;
         const bool okRom = ines::loadFile(nestest, rom, ierr);
-        CHECK(!okRom);
-        CHECK(!ierr.empty());
+        if (!okRom) std::fprintf(stderr, "  ines load: %s\n", ierr.c_str());
+        CHECK(okRom);
+        CHECK(rom.mapperId == 0);
+        CHECK(rom.prgBanks16 == 1);
+        CHECK(rom.chrBanks8 == 1);
+        CHECK(rom.prg.size() == 16384);
+        CHECK(rom.chr.size() == 8192);
+        // Full trace validation against the golden log (PC/regs/flags/cycles
+        // per instruction, automated entry at $C000). First 5003 lines =
+        // official-opcode section; the unofficial continuation is skipped.
+        const std::string nlog = findTestDataFile("nestest.log");
+        if (nlog.empty()) {
+            std::fprintf(stderr, "SKIP: nestest trace (tests\\data\\nestest.log absent)\n");
+        } else {
+            Emulator nesEmu;
+            std::string nreport;
+            const bool okNest = nestestValidate(nesEmu, nestest, nlog, 5003, nreport);
+            if (!okNest) std::fprintf(stderr, "  nestest report: %s\n", nreport.c_str());
+            CHECK(okNest);
+        }
     }
 
     // ---- Klaus Dormann 6502 functional test (golden CPU test) ----
     {
         const std::string bin = findTestDataFile("6502_functional_test.bin");
-        CHECK(!bin.empty());
-        if (!bin.empty()) {
+        if (bin.empty()) {
+            // Fixture removed from the repo in commit v0.2.0. Restore
+            // tests\data\6502_functional_test.bin (Klaus Dormann's image) to
+            // re-enable the golden CPU validation - without it the CPU core is
+            // covered by unit tests only.
+            std::fprintf(stderr,
+                         "SKIP: Klaus golden CPU test (tests\\data\\6502_functional_test.bin absent)\n");
+        } else {
             Memory kmem;
             std::string report;
             // This image needs ~30.6M instructions to reach the $3469 success
@@ -405,6 +431,99 @@ int run_test_core() {
                 CHECK(again[apuOff + kDutyOff + 1] <= 7u);  // dutyStep range 0..7
             }
         }
+        std::remove(statePath.c_str());
+    }
+
+    // ---- savestate: APU blob size mismatch -> live APU untouched,
+    // external IRQ loads FALSE (never inferred from live APU state) ----
+    // Contract: the file itself is structurally valid, so the load succeeds
+    // (CPU/memory restored); only the APU half is rejected (Apu::loadState
+    // false) and the external source then loads false even with bit3 set.
+    {
+        const uint32_t preCrc = emu.memory().crc32();
+        emu.apu().writeRegister(0x4000, 0x11); // value the crafted blob carries
+
+        V1Payload p{};
+        std::memcpy(p.magic, "ST8\x01", 4);
+        p.version = 3;
+        p.a = 0x5B;
+        p.x = 0x12;
+        p.y = 0x23;
+        p.sp = 0xFD;
+        p.p = static_cast<uint8_t>(FLAG_U | FLAG_C);
+        p.pc = 0x8000;
+        p.totalCycles = 7777;
+        p.instructionCount = 9;
+        p.decimalEnabled = 1;
+        std::memcpy(p.ram, emu.memory().data(), Memory::SIZE);
+
+        std::vector<uint8_t> goodBlob;
+        emu.apu().saveState(goodBlob);
+        CHECK(goodBlob.size() > 1u);
+
+        auto writeV3File = [&](const std::vector<uint8_t> &blob, uint8_t irqByte, uint8_t flags) {
+            std::vector<uint8_t> file(sizeof(V1Payload) + 4u + blob.size() + 18u);
+            std::memcpy(file.data(), &p, sizeof(V1Payload));
+            std::size_t pos = sizeof(V1Payload);
+            auto put32v = [&](uint32_t x) {
+                for (int i = 0; i < 4; ++i) file[pos++] = static_cast<uint8_t>((x >> (i * 8)) & 0xFFu);
+            };
+            auto put64v = [&](uint64_t x) {
+                for (int i = 0; i < 8; ++i) file[pos++] = static_cast<uint8_t>((x >> (i * 8)) & 0xFFu);
+            };
+            put32v(static_cast<uint32_t>(blob.size()));
+            std::memcpy(file.data() + pos, blob.data(), blob.size());
+            pos += blob.size();
+            file[pos++] = 0;       // nmiLine
+            file[pos++] = irqByte; // irqLine (legacy; never used for inference)
+            file[pos++] = 0;       // nmiPending
+            file[pos++] = 0;       // core = NMOS6502
+            file[pos++] = 0;       // lastOpcode
+            put32v(333);           // lastCycles (u32)
+            put64v(9);             // instructionCount (u64)
+            file[pos++] = flags;   // transientFlags
+            CHECK(pos == file.size());
+            uint32_t hash = 0x811C9DC5u;
+            for (std::size_t i = 0; i < file.size(); ++i) {
+                hash ^= file[i];
+                hash *= 0x01000193u;
+            }
+            std::vector<uint8_t> disk(4u + file.size());
+            for (int i = 0; i < 4; ++i)
+                disk[static_cast<std::size_t>(i)] = static_cast<uint8_t>((hash >> (i * 8)) & 0xFFu);
+            std::memcpy(disk.data() + 4, file.data(), file.size());
+            std::ofstream vf(statePath, std::ios::binary);
+            vf.write(reinterpret_cast<const char *>(disk.data()),
+                     static_cast<std::streamsize>(disk.size()));
+            CHECK(static_cast<bool>(vf));
+        };
+
+        // Truncated blob (one byte short of the expected size).
+        const std::vector<uint8_t> badBlob(goodBlob.begin(), goodBlob.end() - 1);
+        writeV3File(badBlob, 0, 0x08); // bit3 SET: must still NOT restore external
+        emu.apu().writeRegister(0x4000, 0x7E); // live sentinel the blob must not clobber
+        emu.memory().write(0x1234, 0x44);
+        emu.requestIrq(true); // live external asserted before the load
+        const bool badLoaded = savestate::loadFromFile(emu, statePath, err);
+        if (!badLoaded) std::fprintf(stderr, "  mismatch-blob load: %s\n", err.c_str());
+        CHECK(badLoaded);                             // file itself is valid: load succeeds
+        CHECK(emu.cpu().A == 0x5B);                   // CPU restored from the payload
+        CHECK(emu.memory().crc32() == preCrc);        // memory restored
+        CHECK(emu.apu().registerValue(0x00) == 0x7E); // rejected blob: live APU untouched
+        CHECK(!emu.externalIrqAsserted());            // rejected blob: external false, no inference
+        emu.requestIrq(false);
+        std::remove(statePath.c_str());
+
+        // v3 file predating bit3 (flags byte 0) with irqLine=1: the external
+        // source loads false instead of falling back to live-state inference.
+        writeV3File(goodBlob, 1, 0x00);
+        emu.requestIrq(true); // live external asserted again
+        const bool legacyLoaded = savestate::loadFromFile(emu, statePath, err);
+        if (!legacyLoaded) std::fprintf(stderr, "  legacy-flags load: %s\n", err.c_str());
+        CHECK(legacyLoaded);
+        CHECK(emu.apu().registerValue(0x00) == 0x11); // accepted blob: APU restored
+        CHECK(!emu.externalIrqAsserted());            // no bit3 -> external false
+        emu.requestIrq(false);
         std::remove(statePath.c_str());
     }
 
@@ -700,16 +819,58 @@ int run_test_core() {
         CHECK((fresh.readStatus(0x4015) & 0x40) == 0); // clear-on-read
     }
 
-    // ---- registerValue: 8..15 must not alias 0..7; out of range -> 0 ----
+    // ---- registerValue: range-checked (old `& 0x1F` mask read past the
+    // 0x18-byte registers_ for indices 0x18..0x1F); out of range -> 0 ----
     {
         Apu r;
         r.writeRegister(0x4000, 0x11);
         r.writeRegister(0x4008, 0xAB);
         CHECK(r.registerValue(0x00) == 0x11);
-        CHECK(r.registerValue(0x08) == 0xAB); // old `& 0x17` mask aliased this to 0
+        CHECK(r.registerValue(0x08) == 0xAB); // old `& 0x1F` mask read this fine; its bug was OOB at 0x18..0x1F
         CHECK(r.registerValue(0x17) == 0x00);
         CHECK(r.registerValue(0x18) == r.registerValue(0)); // clamps, no OOB
         CHECK(r.registerValue(-1) == r.registerValue(0));
+    }
+
+    // ---- Apu::loadState: exact-size match only; mismatch leaves state ----
+    {
+        Apu s;
+        s.writeRegister(0x4000, 0x11);
+        std::vector<uint8_t> blob;
+        s.saveState(blob);
+        CHECK(!blob.empty());
+        CHECK(s.loadState(blob)); // exact size: accepted (true)
+        s.writeRegister(0x4000, 0x77); // live mutation after the save
+        const std::vector<uint8_t> shortBlob(blob.begin(), blob.end() - 1);
+        CHECK(!s.loadState(shortBlob));            // wrong size: rejected (false)
+        CHECK(!s.loadState(std::vector<uint8_t>())); // empty: rejected (false)
+        CHECK(s.registerValue(0x00) == 0x77);      // rejected blobs leave live state untouched
+    }
+
+    // ---- startWavRecord probe must not truncate an existing file ----
+    // 0 samples captured -> stopWavRecord() returns early; before the append
+    // probe the file was already truncated to 0 bytes at record start.
+    {
+        const std::string wavPath = tempDir() + "\\test_core_probe.wav";
+        {
+            std::ofstream f(wavPath, std::ios::binary);
+            f << "PREEXISTING";
+        }
+        Apu w;
+        CHECK(w.startWavRecord(wavPath)); // probe opens with app: existing bytes kept
+        w.stopWavRecord();                // 0 samples: early return, no header write
+        std::ifstream in(wavPath, std::ios::binary);
+        const std::string kept((std::istreambuf_iterator<char>(in)),
+                               std::istreambuf_iterator<char>());
+        CHECK(kept == "PREEXISTING");
+        std::remove(wavPath.c_str());
+        // app+binary must still CREATE a missing file (probe succeeds).
+        const std::string newPath = tempDir() + "\\test_core_new_probe.wav";
+        std::remove(newPath.c_str());
+        CHECK(w.startWavRecord(newPath));
+        w.stopWavRecord();
+        CHECK(std::ifstream(newPath, std::ios::binary).good());
+        std::remove(newPath.c_str());
     }
 
     return g_core_fail;

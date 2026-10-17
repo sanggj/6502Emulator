@@ -25,8 +25,9 @@ constexpr char kMagic[4] = {'S', 'T', '8', 1};
 //       bit1 = suppressPollOnce, bit2 = waiIrqBypass (applied through
 //       CPU::restoreTransientState), bit3 = external IRQ source (Emulator
 //       requestIrq / terminal `irq` command). Files written before bit1-3
-//       existed carry zeros there and load as "all clear"; the external
-//       source then falls back to the old irqLine && !frameIrq inference.
+//       existed carry zeros there and load as "all clear": the external
+//       source loads FALSE rather than being re-inferred from live APU
+//       state (same for a rejected APU blob - Apu::loadState false).
 // Versions 1, 2 and 3 all load (same kVersion = 3: the extended bits are a
 // compatible extension of the v3 flags byte, not a layout change); newer or
 // unknown versions are rejected. Every
@@ -223,7 +224,9 @@ bool loadFromFile(Emulator &emu, const std::string &path, std::string &error) {
     // defaults below leave the live APU/interrupt-line state untouched.
     // All trailer parsing happens into locals: a corrupt trailer returns
     // false before the first emulator mutation.
-    uint8_t nmiLine = 0, irqLine = 0, nmiPending = 0, core = 0xFF, lastOpcode = 0;
+    // irqLine (trailer byte 2) is parsed positionally but NOT used: the
+    // external IRQ source is restored from transientFlags bit3 only.
+    uint8_t nmiLine = 0, nmiPending = 0, core = 0xFF, lastOpcode = 0;
     uint32_t lastCycles = 0;
     uint64_t savedInstrCount = 0;
     uint8_t transientFlags = 0;
@@ -246,7 +249,7 @@ bool loadFromFile(Emulator &emu, const std::string &path, std::string &error) {
             return false;
         }
         nmiLine = extra[cpuOff];
-        irqLine = extra[cpuOff + 1];
+        (void)extra[cpuOff + 1]; // irqLine: legacy inference removed (bit3 only)
         nmiPending = extra[cpuOff + 2];
         core = extra[cpuOff + 3];
         lastOpcode = extra[cpuOff + 4];
@@ -284,11 +287,13 @@ bool loadFromFile(Emulator &emu, const std::string &path, std::string &error) {
     if (haveTrailer) {
         // Order matters: the APU blob restores the frame-IRQ flag first, then
         // the external source is re-applied via requestIrq (which ORs both).
-        // bit3 is authoritative for extended saves; older v1/v2/v3 files have
-        // it clear and keep the historical irqLine && !frameIrq inference.
-        emu.apu().loadState(apuBlob);
-        const bool external = (transientFlags & 0x08u) != 0 ||
-                              (irqLine != 0 && !emu.apu().frameIrqAsserted());
+        // Only the persisted bit3 (v3+ flags byte) may restore the external
+        // source, and only when the APU blob was ACCEPTED - a rejected blob
+        // (size mismatch: live APU state survives) or a file predating bit3
+        // (v1/v2, legacy v3) loads external=false instead of inferring from
+        // whatever live APU state happens to be loaded.
+        const bool apuOk = emu.apu().loadState(apuBlob);
+        const bool external = apuOk && payload.version >= 3 && (transientFlags & 0x08u) != 0;
         emu.requestIrq(external);
         // Atomic restore: driving setNmiLine() would latch a phantom edge.
         cpu.restoreNmiState(nmiLine != 0, nmiPending != 0);

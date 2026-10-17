@@ -35,7 +35,8 @@ class Apu {
     void setRecordGain(float gain) noexcept { recordGain_ = gain; }
 
     // registers_ has 0x18 bytes ($4000-$4017); out-of-range/negative indices
-    // collapse to 0 (the old `index & 0x17` mask wrongly aliased 8..15 to 0..7).
+    // collapse to 0 (the old `index & 0x1F` mask read past the 0x18-byte
+    // registers_ for indices 0x18..0x1F - an OOB read, not an aliasing).
     uint8_t registerValue(int index) const noexcept {
         return registers_[index >= 0 && index < 0x18 ? index : 0];
     }
@@ -48,7 +49,9 @@ class Apu {
     // Savestate serialisation: explicit little-endian blob of register,
     // channel and frame-sequencer state (audio buffers/backend excluded).
     void saveState(std::vector<uint8_t> &out) const;
-    void loadState(const std::vector<uint8_t> &in);
+    // false (state left untouched) when the blob size does not match the
+    // current format - callers must not infer anything from live APU state.
+    bool loadState(const std::vector<uint8_t> &in);
 
   private:
     struct Square {

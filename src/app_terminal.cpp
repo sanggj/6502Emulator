@@ -186,17 +186,23 @@ void execTerminalCommand(std::string raw) {
             std::string countText;
             in >> countText;
             const int count = std::clamp(countText.empty() ? 1 : std::stoi(countText), 1, 100000);
-            for (int i = 0; i < count; ++i)
-                if (g_app.dbg.step() == 0) break;
+            {
+                std::lock_guard<std::mutex> guard(remote::emulatorMutex());
+                for (int i = 0; i < count; ++i)
+                    if (g_app.dbg.step() == 0) break;
+            }
         } else if (op == "tc") {
             std::string cycText;
             in >> cycText;
             const int budget = std::clamp(cycText.empty() ? 1 : std::stoi(cycText), 1, 1000000);
             int spent = 0;
-            while (spent < budget) {
-                const int before = g_app.emu.cpu().getCycles();
-                if (g_app.dbg.step() == 0) break;
-                spent += g_app.emu.cpu().getCycles() - before;
+            {
+                std::lock_guard<std::mutex> guard(remote::emulatorMutex());
+                while (spent < budget) {
+                    const int before = g_app.emu.cpu().getCycles();
+                    if (g_app.dbg.step() == 0) break;
+                    spent += g_app.emu.cpu().getCycles() - before;
+                }
             }
             termInfo("spent ~" + std::to_string(spent) + " cycles\r\n");
         } else if (op == "until") {
@@ -206,9 +212,13 @@ void execTerminalCommand(std::string raw) {
             if (parseAddrArg(addrText, addr)) {
                 // One-shot breakpoint like run-to-cursor (main.cpp's
                 // lastStopWasBreakpoint gate never fires without an installed
-                // breakpoint); bp-vector mutation under emulatorMutex() like
-                // every other run/step path (remote.cpp iterates it locked).
+                // breakpoint). bp-vector mutation under emulatorMutex() because
+                // remote.cpp iterates that vector under the same lock.
                 std::lock_guard<std::mutex> guard(remote::emulatorMutex());
+                // Drop any PREVIOUS run-to's one-shot breakpoint first, so a
+                // second until/run-to cannot orphan the first.
+                extern void appClearRunToCursor();
+                appClearRunToCursor();
                 bool userBpThere = false;
                 for (const auto &bp : g_app.dbg.breakpoints())
                     if (bp.address == addr) {
@@ -287,17 +297,25 @@ void execTerminalCommand(std::string raw) {
             std::getline(in, cond);
             cond.erase(cond.begin(), std::find_if(cond.begin(), cond.end(),
                                                   [](unsigned char ch) { return !std::isspace(ch); }));
-            if (parseAddrArg(a, addr) && g_app.dbg.addBreakpoint(addr, cond))
-                termOk("breakpoint set\r\n");
-            else
+            if (parseAddrArg(a, addr)) {
+                std::lock_guard<std::mutex> guard(remote::emulatorMutex());
+                if (g_app.dbg.addBreakpoint(addr, cond))
+                    termOk("breakpoint set\r\n");
+                else
+                    termError("invalid breakpoint\r\n");
+            } else
                 termError("invalid breakpoint\r\n");
         } else if (op == "bc") {
             std::string a;
             in >> a;
             uint16_t addr = 0;
-            if (parseAddrArg(a, addr) && g_app.dbg.removeBreakpoint(addr))
-                termOk("removed\r\n");
-            else
+            if (parseAddrArg(a, addr)) {
+                std::lock_guard<std::mutex> guard(remote::emulatorMutex());
+                if (g_app.dbg.removeBreakpoint(addr))
+                    termOk("removed\r\n");
+                else
+                    termError("not found\r\n");
+            } else
                 termError("not found\r\n");
         } else if (op == "blist") {
             std::ostringstream o;
@@ -450,10 +468,13 @@ void execTerminalCommand(std::string raw) {
             termOk(buf);
         } else if (op == "frame") {
             uint64_t executed = 0;
-            while (executed < 30000 && g_app.emu.running()) {
-                const uint64_t got = g_app.dbg.runInstructions(200);
-                if (got == 0) break;
-                executed += got;
+            {
+                std::lock_guard<std::mutex> guard(remote::emulatorMutex());
+                while (executed < 30000 && g_app.emu.running()) {
+                    const uint64_t got = g_app.dbg.runInstructions(200);
+                    if (got == 0) break;
+                    executed += got;
+                }
             }
             termInfo("ran " + std::to_string(executed) + " instr\r\n");
         } else if (op == "apu") {
@@ -490,8 +511,13 @@ void execTerminalCommand(std::string raw) {
             in >> f;
             ines::NesRom rom;
             std::string err;
-            if (ines::loadFile(f, rom, err) && ines::mapInto(g_app.emu, rom, err)) {
-                g_app.dbg.clear();
+            bool mapped = false;
+            if (ines::loadFile(f, rom, err)) {
+                std::lock_guard<std::mutex> guard(remote::emulatorMutex());
+                mapped = ines::mapInto(g_app.emu, rom, err);
+                if (mapped) g_app.dbg.clear();
+            }
+            if (mapped) {
                 termOk(err + "\r\n");
                 g_app.disasm.jumpToPc();
             } else {
@@ -523,9 +549,15 @@ void execTerminalCommand(std::string raw) {
             std::string err;
             if (sub == "save")
                 savestate::saveToFile(g_app.emu, savestate::slotPath(slot), err);
-            else if (sub == "load")
+            else if (sub == "load") {
                 savestate::loadFromFile(g_app.emu, savestate::slotPath(slot), err);
-            else {
+                // A load can stop execution without passing through the main
+                // tick's run-to cleanup (src/main.cpp) - drop any pending
+                // one-shot run-to breakpoint here.
+                extern void appClearRunToCursor();
+                std::lock_guard<std::mutex> guard(remote::emulatorMutex());
+                appClearRunToCursor();
+            } else {
                 termError("usage: state save|load [slot]\r\n");
                 return;
             }

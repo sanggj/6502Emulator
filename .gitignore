@@ -1,0 +1,6 @@
+build/
+*.obj
+6502_ide.ini
+.vs/
+*.user
+__pycache__/

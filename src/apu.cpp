@@ -549,12 +549,13 @@ void Apu::saveState(std::vector<uint8_t> &out) const {
     put8(out, enabled_);
 }
 
-void Apu::loadState(const std::vector<uint8_t> &in) {
+// false: blob size does not match the current format; live state untouched.
+bool Apu::loadState(const std::vector<uint8_t> &in) {
     std::vector<uint8_t> expected;
     saveState(expected);
     // Exact-size match only: a truncated OR foreign/oversized blob means we
     // do not understand the format - keep the live state untouched.
-    if (in.size() != expected.size()) return;
+    if (in.size() != expected.size()) return false;
     std::size_t pos = 0;
     auto g8 = [&]() -> uint8_t { return in[pos++]; };
     auto g16 = [&]() -> uint16_t {
@@ -618,6 +619,7 @@ void Apu::loadState(const std::vector<uint8_t> &in) {
     frameIrqInhibit_ = g8() != 0;
     frameIrqPending_ = g8() != 0;
     enabled_ = g8() != 0;
+    return true;
 }
 
 void Apu::writeRegister(uint16_t address, uint8_t value) {
@@ -871,8 +873,10 @@ bool Apu::startWavRecord(const std::string &path) {
     stopWavRecord();
     // Probe-open so an unwritable path fails fast here (recording_ stays
     // false) instead of being silently dropped by stopWavRecord().
+    // app+binary (app implies out) creates a missing file and does NOT
+    // truncate an existing one - a 0-sample stop leaves prior bytes intact.
     {
-        std::ofstream probe(path, std::ios::binary);
+        std::ofstream probe(path, std::ios::binary | std::ios::app);
         if (!probe) return false;
     }
     recorded_.clear();
